@@ -2,56 +2,20 @@
 
 // app/admin/notices/page.tsx
 
-// 관리자 공지사항 관리 페이지
-// - 공지 목록 조회
-// - 공지 생성 / 수정 / 삭제
-// - 활성화 여부 / 팝업 여부 / 우선순위 / 노출 시작일 / 종료일 관리
-// - 메인 홈에서 바로 뜨는 팝업형 공지를 만들 수 있도록 구성
-// - datetime-local 입력값은 브라우저 로컬 시간 문자열이므로
-//   서버로 보낼 때 ISO 문자열로 변환해서 타임존 꼬임을 방지함
-
 import { useCallback, useEffect, useMemo, useState } from "react";
-// React 훅들
-// - useState: 폼 / 목록 / 로딩 / 알림 / 수정모드 상태 관리
-// - useEffect: 최초 진입 시 공지 목록 자동 조회
-// - useCallback: API 호출 함수 재생성 최소화
-// - useMemo: 요약 수치 계산 최적화
-
 import { auth } from "@/lib/firebase.client";
-// 현재 로그인한 관리자 계정의 Firebase ID Token을 가져오기 위해 사용
-// 관리자 API 호출 시 Authorization 헤더에 Bearer 토큰으로 전달
 
 type AdminNoticeRow = {
   id: string;
-  // 공지 문서 id
-
   title: string;
-  // 공지 제목
-
   content: string;
-  // 공지 본문
-
   isActive: boolean;
-  // 현재 활성화 여부
-
   isPopup: boolean;
-  // 팝업 공지 여부
-
   priority: number;
-  // 우선순위
-  // 숫자가 작을수록 먼저 노출
-
   startsAt: string | null;
-  // 노출 시작일 ISO 문자열
-
   endsAt: string | null;
-  // 노출 종료일 ISO 문자열
-
   createdAt: string | null;
-  // 생성일 ISO 문자열
-
   updatedAt: string | null;
-  // 수정일 ISO 문자열
 };
 
 type NoticeFormState = {
@@ -78,36 +42,25 @@ const initialForm: NoticeFormState = {
   startsAt: "",
   endsAt: "",
 };
-// 공지 작성 기본값
-// - 기본적으로 활성화 + 팝업 공지 상태로 시작
 
 async function getIdTokenOrThrow() {
-  // 현재 로그인한 관리자 계정의 Firebase ID Token을 가져오는 함수
-
   const user = auth.currentUser;
-  // 현재 로그인한 관리자 유저 정보 읽기
 
   if (!user) {
     throw new Error("NO_LOGIN");
   }
-  // 로그인 정보가 없으면 예외 처리
 
   return await user.getIdToken();
-  // Firebase ID Token 반환
 }
 
 function formatDate(value: string | null) {
-  // ISO 문자열을 한국식 보기 좋은 날짜 포맷으로 바꾸는 함수
-
   if (!value) return "-";
-  // 값이 없으면 하이픈 표시
 
   const d = new Date(value);
 
   if (Number.isNaN(d.getTime())) {
     return value;
   }
-  // 변환 실패 시 원본 문자열 반환
 
   return new Intl.DateTimeFormat("ko-KR", {
     year: "numeric",
@@ -116,14 +69,9 @@ function formatDate(value: string | null) {
     hour: "2-digit",
     minute: "2-digit",
   }).format(d);
-  // 한국 시간 포맷으로 반환
 }
 
 function toInputDateTime(value: string | null) {
-  // ISO 문자열을 datetime-local input 값 형태로 바꾸는 함수
-  // 예: 2026-03-04T15:30
-  // 저장은 ISO로 되어 있어도, 입력창에는 로컬 시간으로 다시 보여줘야 함
-
   if (!value) return "";
 
   const d = new Date(value);
@@ -139,40 +87,9 @@ function toInputDateTime(value: string | null) {
   return `${yyyy}-${mm}-${dd}T${hh}:${mi}`;
 }
 
-function toIsoFromDateTimeLocal(value: string) {
-  // datetime-local input 값(타임존 없는 로컬 문자열)을
-  // 브라우저에서 정확한 ISO 문자열로 바꾸는 함수
-  //
-  // 예:
-  // "2026-03-04T15:30"
-  // -> 브라우저 로컬 시간 기준 Date 생성
-  // -> "2026-03-04T06:30:00.000Z" 같은 ISO 문자열 반환
-  //
-  // 이렇게 해야 서버 시간대와 상관없이 사용자가 고른 시각이 정확히 저장됨
-
-  const trimmed = value.trim();
-
-  if (!trimmed) return null;
-  // 비어 있으면 null 반환
-  // 시작일/종료일 미설정 상태를 의미
-
-  const date = new Date(trimmed);
-  // 브라우저 로컬 시간 기준 Date 객체 생성
-
-  if (Number.isNaN(date.getTime())) {
-    return null;
-  }
-  // 잘못된 값이면 null 처리
-
-  return date.toISOString();
-  // 서버로 보낼 ISO 문자열 반환
-}
-
 function setNowDateTimeLocal() {
-  // "지금" 버튼처럼 쓸 수 있는 현재 시각 datetime-local 문자열 생성 함수
-  // 초는 버리고 분까지만 사용
-
   const now = new Date();
+  now.setSeconds(0, 0);
 
   const yyyy = now.getFullYear();
   const mm = String(now.getMonth() + 1).padStart(2, "0");
@@ -183,88 +100,88 @@ function setNowDateTimeLocal() {
   return `${yyyy}-${mm}-${dd}T${hh}:${mi}`;
 }
 
+function parseDateTimeLocal(value: string): Date | null {
+  const trimmed = value.trim();
+
+  if (!trimmed) return null;
+
+  const match = trimmed.match(
+    /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2})$/
+  );
+
+  if (!match) return null;
+
+  const [, y, m, d, hh, mi] = match;
+
+  const year = Number(y);
+  const monthIndex = Number(m) - 1;
+  const day = Number(d);
+  const hour = Number(hh);
+  const minute = Number(mi);
+
+  const date = new Date(year, monthIndex, day, hour, minute, 0, 0);
+
+  if (
+    date.getFullYear() !== year ||
+    date.getMonth() !== monthIndex ||
+    date.getDate() !== day ||
+    date.getHours() !== hour ||
+    date.getMinutes() !== minute
+  ) {
+    return null;
+  }
+
+  return date;
+}
+
 function truncateText(value: string, max = 120) {
-  // 공지 본문을 목록에서 너무 길지 않게 잘라주는 함수
-
   if (!value) return "";
-
   if (value.length <= max) return value;
-
   return `${value.slice(0, max)}...`;
 }
 
 function getStatusLabel(item: AdminNoticeRow) {
-  // 공지의 현재 상태를 사용자 친화적인 텍스트로 표시하는 함수
-
   if (!item.isActive) return "비활성";
 
   const now = Date.now();
-  // 현재 시각
-
   const startsAt = item.startsAt ? new Date(item.startsAt).getTime() : null;
   const endsAt = item.endsAt ? new Date(item.endsAt).getTime() : null;
 
-  if (startsAt && now < startsAt) {
+  if (startsAt !== null && now < startsAt) {
     return "예정";
   }
-  // 시작일 전이면 예정 상태
 
-  if (endsAt && now > endsAt) {
+  if (endsAt !== null && now > endsAt) {
     return "종료";
   }
-  // 종료일이 지났으면 종료 상태
 
   return "노출 중";
-  // 그 외에는 실제 노출 중
 }
 
 export default function AdminNoticesPage() {
   const [items, setItems] = useState<AdminNoticeRow[]>([]);
-  // 공지 목록 상태
-
   const [form, setForm] = useState<NoticeFormState>(initialForm);
-  // 공지 작성 / 수정 폼 상태
-
   const [editingId, setEditingId] = useState<string | null>(null);
-  // 현재 수정 중인 공지 id
-  // null이면 새 공지 작성 모드
-
   const [loading, setLoading] = useState(true);
-  // 목록 로딩 상태
-
   const [saving, setSaving] = useState(false);
-  // 저장(생성/수정) 처리 중 상태
-
   const [busyId, setBusyId] = useState<string | null>(null);
-  // 삭제 등 개별 공지 처리 중 id
-
   const [message, setMessage] = useState<NoticeMessage | null>(null);
-  // 화면 상단 알림 메시지 상태
 
   const loadNotices = useCallback(async () => {
-    // 공지 목록을 서버에서 불러오는 함수
-
     setMessage(null);
-    // 이전 메시지 초기화
-
     setLoading(true);
-    // 로딩 시작
 
     try {
       const token = await getIdTokenOrThrow();
-      // 관리자 인증 토큰 가져오기
 
       const res = await fetch("/api/admin/notices", {
         headers: {
           Authorization: `Bearer ${token}`,
-          // 관리자 인증 토큰 전달
         },
         cache: "no-store",
-        // 공지 상태를 항상 최신으로 보기 위해 캐시 비활성화
       });
 
       const data = await res.json();
-      // 응답 JSON 파싱
 
       if (!res.ok || !data.ok) {
         setMessage({
@@ -275,7 +192,6 @@ export default function AdminNoticesPage() {
       }
 
       setItems(data.notices ?? []);
-      // 공지 목록 상태 반영
     } catch {
       setMessage({
         type: "error",
@@ -283,33 +199,24 @@ export default function AdminNoticesPage() {
       });
     } finally {
       setLoading(false);
-      // 로딩 종료
     }
   }, []);
 
   useEffect(() => {
     loadNotices();
-    // 최초 진입 시 공지 목록 자동 조회
   }, [loadNotices]);
 
-  const resetForm = () => {
-    // 폼을 초기 상태로 되돌리는 함수
-
+  const resetForm = (options?: { keepMessage?: boolean }) => {
     setForm(initialForm);
-    // 작성 기본값으로 초기화
-
     setEditingId(null);
-    // 수정 모드 해제
 
-    setMessage(null);
-    // 메시지 초기화
+    if (!options?.keepMessage) {
+      setMessage(null);
+    }
   };
 
   const startEdit = (item: AdminNoticeRow) => {
-    // 특정 공지를 수정 모드로 전환하는 함수
-
     setEditingId(item.id);
-    // 수정 중인 공지 id 저장
 
     setForm({
       title: item.title,
@@ -320,18 +227,13 @@ export default function AdminNoticesPage() {
       startsAt: toInputDateTime(item.startsAt),
       endsAt: toInputDateTime(item.endsAt),
     });
-    // 선택한 공지 데이터를 폼에 채움
 
     setMessage(null);
-    // 이전 메시지 초기화
   };
 
   const onSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
-    // 폼 기본 새로고침 방지
-
     setMessage(null);
-    // 이전 메시지 초기화
 
     if (!form.title.trim() || !form.content.trim()) {
       setMessage({
@@ -340,25 +242,66 @@ export default function AdminNoticesPage() {
       });
       return;
     }
-    // 제목/내용 필수 입력 검증
+
+    const parsedStartsAt = form.startsAt.trim()
+      ? parseDateTimeLocal(form.startsAt)
+      : null;
+
+    const parsedEndsAt = form.endsAt.trim()
+      ? parseDateTimeLocal(form.endsAt)
+      : null;
+
+    if (form.startsAt.trim() && !parsedStartsAt) {
+      setMessage({
+        type: "error",
+        text: "노출 시작일 형식이 올바르지 않습니다.",
+      });
+      return;
+    }
+
+    if (form.endsAt.trim() && !parsedEndsAt) {
+      setMessage({
+        type: "error",
+        text: "노출 종료일 형식이 올바르지 않습니다.",
+      });
+      return;
+    }
+
+    if (
+      parsedStartsAt &&
+      parsedEndsAt &&
+      parsedEndsAt.getTime() <= parsedStartsAt.getTime()
+    ) {
+      setMessage({
+        type: "error",
+        text: "노출 종료일은 시작일보다 뒤여야 합니다.",
+      });
+      return;
+    }
 
     setSaving(true);
-    // 저장 시작
 
     try {
       const token = await getIdTokenOrThrow();
-      // 관리자 인증 토큰 가져오기
-
       const isEditMode = Boolean(editingId);
-      // 수정 모드 여부 판별
 
       const url = isEditMode
         ? `/api/admin/notices/${editingId}`
         : "/api/admin/notices";
-      // 생성/수정에 따라 API URL 선택
 
       const method = isEditMode ? "PATCH" : "POST";
-      // 생성/수정에 따라 HTTP method 선택
+
+      const payload = {
+        title: form.title.trim(),
+        content: form.content.trim(),
+        isActive: form.isActive,
+        isPopup: form.isPopup,
+        priority: Number.isFinite(Number(form.priority))
+          ? Number(form.priority)
+          : 0,
+        startsAt: parsedStartsAt ? parsedStartsAt.toISOString() : null,
+        endsAt: parsedEndsAt ? parsedEndsAt.toISOString() : null,
+      };
 
       const res = await fetch(url, {
         method,
@@ -366,26 +309,10 @@ export default function AdminNoticesPage() {
           Authorization: `Bearer ${token}`,
           "Content-Type": "application/json",
         },
-        body: JSON.stringify({
-          title: form.title.trim(),
-          content: form.content.trim(),
-          isActive: form.isActive,
-          isPopup: form.isPopup,
-          priority: Number(form.priority),
-
-          startsAt: toIsoFromDateTimeLocal(form.startsAt),
-          // 핵심 수정
-          // datetime-local 값을 브라우저에서 ISO 문자열로 변환해서 전송
-          // 서버가 자기 마음대로 시간대를 해석하지 못하게 막음
-
-          endsAt: toIsoFromDateTimeLocal(form.endsAt),
-          // 종료일도 동일하게 ISO 문자열로 변환
-        }),
+        body: JSON.stringify(payload),
       });
-      // 공지 생성/수정 요청 전송
 
       const data = await res.json();
-      // 응답 JSON 파싱
 
       if (!res.ok || !data.ok) {
         setMessage({
@@ -396,7 +323,8 @@ export default function AdminNoticesPage() {
       }
 
       await loadNotices();
-      // 저장 후 목록 재조회
+
+      resetForm({ keepMessage: true });
 
       setMessage({
         type: "success",
@@ -404,9 +332,6 @@ export default function AdminNoticesPage() {
           ? "공지사항을 수정했어요."
           : "공지사항을 생성했어요.",
       });
-
-      resetForm();
-      // 폼 초기화
     } catch {
       setMessage({
         type: "error",
@@ -414,15 +339,11 @@ export default function AdminNoticesPage() {
       });
     } finally {
       setSaving(false);
-      // 저장 종료
     }
   };
 
   const deleteNotice = async (noticeId: string) => {
-    // 특정 공지를 삭제하는 함수
-
     const ok = confirm("정말 이 공지사항을 삭제하시겠습니까?");
-
     if (!ok) return;
 
     setMessage(null);
@@ -451,7 +372,7 @@ export default function AdminNoticesPage() {
       setItems((prev) => prev.filter((item) => item.id !== noticeId));
 
       if (editingId === noticeId) {
-        resetForm();
+        resetForm({ keepMessage: true });
       }
 
       setMessage({
@@ -529,7 +450,8 @@ export default function AdminNoticesPage() {
 
             {editingId && (
               <button
-                onClick={resetForm}
+                type="button"
+                onClick={() => resetForm()}
                 className="rounded-[14px] bg-zinc-100 px-4 py-2 text-sm font-bold text-zinc-800 transition hover:bg-zinc-200"
               >
                 새 공지로 전환
@@ -608,7 +530,8 @@ export default function AdminNoticesPage() {
                 onChange={(e) =>
                   setForm((prev) => ({
                     ...prev,
-                    priority: Number(e.target.value),
+                    priority:
+                      e.target.value === "" ? 0 : Number(e.target.value),
                   }))
                 }
                 className="h-[54px] w-full rounded-[16px] border border-zinc-200 bg-white px-4 text-sm outline-none transition focus:border-[#6c7cff]"
@@ -639,7 +562,9 @@ export default function AdminNoticesPage() {
 
                 <input
                   type="datetime-local"
+                  step={60}
                   value={form.startsAt}
+                  max={form.endsAt || undefined}
                   onChange={(e) =>
                     setForm((prev) => ({ ...prev, startsAt: e.target.value }))
                   }
@@ -669,7 +594,9 @@ export default function AdminNoticesPage() {
 
                 <input
                   type="datetime-local"
+                  step={60}
                   value={form.endsAt}
+                  min={form.startsAt || undefined}
                   onChange={(e) =>
                     setForm((prev) => ({ ...prev, endsAt: e.target.value }))
                   }
@@ -707,7 +634,7 @@ export default function AdminNoticesPage() {
 
               <button
                 type="button"
-                onClick={resetForm}
+                onClick={() => resetForm()}
                 className="h-[54px] rounded-[16px] bg-zinc-100 px-6 text-sm font-bold text-zinc-800 transition hover:bg-zinc-200"
               >
                 초기화
@@ -726,6 +653,7 @@ export default function AdminNoticesPage() {
             </div>
 
             <button
+              type="button"
               onClick={loadNotices}
               className="h-[48px] rounded-[14px] bg-zinc-900 px-5 text-sm font-bold text-white transition hover:opacity-90"
             >
@@ -833,6 +761,7 @@ export default function AdminNoticesPage() {
                         <td className="px-8 py-5 align-top">
                           <div className="flex flex-wrap gap-2">
                             <button
+                              type="button"
                               onClick={() => startEdit(item)}
                               className="h-[40px] rounded-[12px] bg-[#eef3fb] px-4 text-sm font-bold text-[#003F8D] transition hover:bg-[#e1ebfb]"
                             >
@@ -840,6 +769,7 @@ export default function AdminNoticesPage() {
                             </button>
 
                             <button
+                              type="button"
                               disabled={isBusy}
                               onClick={() => deleteNotice(item.id)}
                               className="h-[40px] rounded-[12px] bg-rose-50 px-4 text-sm font-bold text-rose-700 transition hover:bg-rose-100 disabled:opacity-60"
