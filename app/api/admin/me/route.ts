@@ -10,10 +10,10 @@
 // 3. 검증된 uid가 ADMIN_UIDS 안에 있으면 관리자 통과
 //
 // 현재는 가장 단순한 allow-list 방식이야.
-// 즉 .env.local 의 ADMIN_UIDS 에 등록된 uid만 관리자라고 보는 구조.
+// 즉 .env.local 또는 Vercel 환경변수의 ADMIN_UIDS 에 등록된 uid만 관리자라고 보는 구조.
 
 import { NextResponse } from "next/server";
-import { adminAuth } from "@/lib/firebase.admin";
+import { getAdminAuth } from "@/lib/firebase.admin";
 
 export const runtime = "nodejs";
 
@@ -27,6 +27,31 @@ function isAdminUid(uid: string) {
     .filter(Boolean);
 
   return list.includes(uid);
+}
+
+function createErrorResponse(error: unknown) {
+  // 공통 에러 응답 함수
+  // 환경변수 누락 / 토큰 문제를 좀 더 명확히 구분해서 반환
+
+  const msg = String((error as any)?.message ?? "");
+
+  if (msg.startsWith("MISSING_ENV:")) {
+    const envName = msg.replace("MISSING_ENV:", "");
+
+    return NextResponse.json(
+      {
+        ok: false,
+        reason: "SERVER_CONFIG_ERROR",
+        message: `Missing environment variable: ${envName}`,
+      },
+      { status: 500 }
+    );
+  }
+
+  return NextResponse.json(
+    { ok: false, reason: "INVALID_TOKEN" },
+    { status: 401 }
+  );
 }
 
 export async function GET(req: Request) {
@@ -45,6 +70,10 @@ export async function GET(req: Request) {
       );
     }
 
+    // Firebase Admin Auth 인스턴스를 "여기서" 가져오도록 변경
+    // 이제 import 시점이 아니라 실제 요청 처리 시점에 초기화됨
+    const adminAuth = getAdminAuth();
+
     // Firebase Admin SDK로 토큰 검증
     const decoded = await adminAuth.verifyIdToken(token);
 
@@ -62,11 +91,9 @@ export async function GET(req: Request) {
       uid: decoded.uid,
       email: decoded.email ?? null,
     });
-  } catch {
+  } catch (error) {
     // 토큰이 잘못되었거나 만료됐거나 검증 실패
-    return NextResponse.json(
-      { ok: false, reason: "INVALID_TOKEN" },
-      { status: 401 }
-    );
+    // 또는 서버 환경변수 누락
+    return createErrorResponse(error);
   }
 }
