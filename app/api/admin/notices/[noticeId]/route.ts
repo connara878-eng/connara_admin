@@ -94,6 +94,26 @@ function parseOptionalDate(value: unknown) {
   return date;
 }
 
+function parseOptionalImageUrl(value: unknown) {
+  // imageUrl 입력값을 string | null 로 정리하는 함수
+
+  if (value === null || value === undefined) {
+    return null;
+  }
+
+  if (typeof value !== "string") {
+    throw new Error("BAD_REQUEST");
+  }
+
+  const trimmed = value.trim();
+
+  if (!trimmed) {
+    return null;
+  }
+
+  return trimmed;
+}
+
 function createErrorResponse(error: unknown) {
   // 공통 에러 응답 함수
 
@@ -134,7 +154,7 @@ function createErrorResponse(error: unknown) {
 }
 
 async function ensureNoticeExists(noticeId: string) {
-  // 대상 공지 문서가 실제로 존재하는지 확인하는 함수
+  // 대상 공지 문서 존재 여부 확인 함수
 
   const ref = adminDb.collection("notices").doc(noticeId);
   // notices/{noticeId} 문서 참조
@@ -145,10 +165,31 @@ async function ensureNoticeExists(noticeId: string) {
   if (!snap.exists) {
     throw new Error("NOTICE_NOT_FOUND");
   }
-  // 문서가 없으면 404 성격 에러
 
   return ref;
-  // 있으면 문서 참조 반환
+}
+
+function mapNoticeDoc(doc: any) {
+  // Firestore 공지 문서를 응답용 객체로 변환하는 함수
+
+  const data = doc.data() ?? {};
+
+  return {
+    id: doc.id,
+    title: data.title ?? "",
+    content: data.content ?? "",
+    imageUrl: data.imageUrl ?? null,
+    isActive: Boolean(data.isActive),
+    isPopup: Boolean(data.isPopup),
+    priority:
+      typeof data.priority === "number" && Number.isFinite(data.priority)
+        ? data.priority
+        : 0,
+    startsAt: toIso(data.startsAt),
+    endsAt: toIso(data.endsAt),
+    createdAt: toIso(data.createdAt),
+    updatedAt: toIso(data.updatedAt),
+  };
 }
 
 export async function PATCH(
@@ -175,10 +216,13 @@ export async function PATCH(
     const content = typeof body.content === "string" ? body.content.trim() : "";
     // 본문 문자열 정리
 
-    const isActive = Boolean(body.isActive);
-    // 활성화 여부
+    const imageUrl = parseOptionalImageUrl(body.imageUrl);
+    // 이미지 URL 정리
 
-    const isPopup = Boolean(body.isPopup);
+    const isActive = typeof body.isActive === "boolean" ? body.isActive : false;
+    // 활성 여부
+
+    const isPopup = typeof body.isPopup === "boolean" ? body.isPopup : false;
     // 팝업 여부
 
     const priority = Number(body.priority);
@@ -193,17 +237,14 @@ export async function PATCH(
     if (!title || !content) {
       throw new Error("BAD_REQUEST");
     }
-    // 제목/본문 필수
 
     if (!Number.isFinite(priority)) {
       throw new Error("BAD_REQUEST");
     }
-    // priority는 유효한 숫자여야 함
 
     if (startsAt && endsAt && startsAt.getTime() > endsAt.getTime()) {
       throw new Error("BAD_REQUEST");
     }
-    // 시작일이 종료일보다 뒤면 잘못된 요청
 
     const ref = await ensureNoticeExists(noticeId);
     // 수정 전에 공지 존재 여부 확인
@@ -211,6 +252,7 @@ export async function PATCH(
     await ref.update({
       title,
       content,
+      imageUrl,
       isActive,
       isPopup,
       priority,
@@ -221,27 +263,11 @@ export async function PATCH(
     // 공지 문서 수정
 
     const saved = await ref.get();
-    // 저장 후 다시 읽어서 응답에 반영
-
-    const data = saved.data() ?? {};
+    // 수정 후 다시 읽어서 응답에 반영
 
     return NextResponse.json({
       ok: true,
-      notice: {
-        id: saved.id,
-        title: data.title ?? "",
-        content: data.content ?? "",
-        isActive: Boolean(data.isActive),
-        isPopup: Boolean(data.isPopup),
-        priority:
-          typeof data.priority === "number" && Number.isFinite(data.priority)
-            ? data.priority
-            : 0,
-        startsAt: toIso(data.startsAt),
-        endsAt: toIso(data.endsAt),
-        createdAt: toIso(data.createdAt),
-        updatedAt: toIso(data.updatedAt),
-      },
+      notice: mapNoticeDoc(saved),
     });
     // 수정된 공지 반환
   } catch (error) {
@@ -271,7 +297,6 @@ export async function DELETE(
       noticeId,
       deleted: true,
     });
-    // 성공 응답 반환
   } catch (error) {
     return createErrorResponse(error);
   }

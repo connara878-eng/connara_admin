@@ -6,18 +6,24 @@
 // - 공지 목록 조회
 // - 공지 생성 / 수정 / 삭제
 // - 활성화 여부 / 팝업 여부 / 우선순위 / 노출 시작일 / 종료일 관리
-// - 메인 홈에서 바로 뜨는 팝업형 공지를 만들 수 있도록 구성
+// - 이미지 파일 업로드 후 Firebase Storage 다운로드 URL을 공지에 저장
+// - 메인 홈 팝업에서 imageUrl 을 읽어 이미지 공지처럼 표시할 수 있게 구성
 
 import { useCallback, useEffect, useMemo, useState } from "react";
 // React 훅들
-// - useState: 폼 / 목록 / 로딩 / 알림 / 수정모드 상태 관리
+// - useState: 목록 / 폼 / 파일 / 로딩 / 알림 / 수정모드 상태 관리
 // - useEffect: 최초 진입 시 공지 목록 자동 조회
 // - useCallback: API 호출 함수 재생성 최소화
 // - useMemo: 요약 수치 계산 최적화
 
-import { auth } from "@/lib/firebase.client";
-// 현재 로그인한 관리자 계정의 Firebase ID Token을 가져오기 위해 사용
-// 관리자 API 호출 시 Authorization 헤더에 Bearer 토큰으로 전달
+import { ref, uploadBytes, getDownloadURL } from "firebase/storage";
+// Firebase Storage 업로드 관련 함수들
+// - ref: 저장 경로 참조 생성
+// - uploadBytes: 파일 업로드
+// - getDownloadURL: 업로드 후 공개 URL 가져오기
+
+import { auth, storage } from "@/lib/firebase.client";
+// auth: 관리자 로그인 상태 / storage: 공지 이미지 파일 업로드용
 
 type AdminNoticeRow = {
   id: string;
@@ -29,11 +35,14 @@ type AdminNoticeRow = {
   content: string;
   // 공지 본문
 
+  imageUrl: string | null;
+  // 팝업 이미지 URL
+
   isActive: boolean;
-  // 현재 활성화 여부
+  // 활성화 여부
 
   isPopup: boolean;
-  // 팝업 공지 여부
+  // 팝업 여부
 
   priority: number;
   // 우선순위
@@ -55,6 +64,7 @@ type AdminNoticeRow = {
 type NoticeFormState = {
   title: string;
   content: string;
+  imageUrl: string;
   isActive: boolean;
   isPopup: boolean;
   priority: number;
@@ -70,6 +80,7 @@ type NoticeMessage = {
 const initialForm: NoticeFormState = {
   title: "",
   content: "",
+  imageUrl: "",
   isActive: true,
   isPopup: true,
   priority: 0,
@@ -77,35 +88,33 @@ const initialForm: NoticeFormState = {
   endsAt: "",
 };
 // 공지 작성 기본값
-// - 기본적으로 활성화 + 팝업 공지 상태로 시작
+// - 기본적으로 활성화 + 팝업 상태
+// - imageUrl 은 처음엔 빈 문자열
 
 async function getIdTokenOrThrow() {
   // 현재 로그인한 관리자 계정의 Firebase ID Token을 가져오는 함수
 
   const user = auth.currentUser;
-  // 현재 로그인한 관리자 유저 정보 읽기
+  // 현재 로그인한 관리자 계정 읽기
 
   if (!user) {
     throw new Error("NO_LOGIN");
   }
-  // 로그인 정보가 없으면 예외 처리
 
   return await user.getIdToken();
-  // Firebase ID Token 반환
+  // 관리자 API 호출용 Bearer 토큰 반환
 }
 
 function formatDate(value: string | null) {
   // ISO 문자열을 한국식 보기 좋은 날짜 포맷으로 바꾸는 함수
 
   if (!value) return "-";
-  // 값이 없으면 하이픈 표시
 
   const d = new Date(value);
 
   if (Number.isNaN(d.getTime())) {
     return value;
   }
-  // 변환 실패 시 원본 문자열 반환
 
   return new Intl.DateTimeFormat("ko-KR", {
     year: "numeric",
@@ -114,12 +123,10 @@ function formatDate(value: string | null) {
     hour: "2-digit",
     minute: "2-digit",
   }).format(d);
-  // 한국 시간 포맷으로 반환
 }
 
 function toInputDateTime(value: string | null) {
   // ISO 문자열을 datetime-local input 값 형태로 바꾸는 함수
-  // 예: 2026-03-04T15:30
 
   if (!value) return "";
 
@@ -147,28 +154,29 @@ function truncateText(value: string, max = 120) {
 }
 
 function getStatusLabel(item: AdminNoticeRow) {
-  // 공지의 현재 상태를 사용자 친화적인 텍스트로 표시하는 함수
+  // 현재 공지 상태를 보기 좋은 텍스트로 바꾸는 함수
 
   if (!item.isActive) return "비활성";
 
   const now = Date.now();
-  // 현재 시각
-
   const startsAt = item.startsAt ? new Date(item.startsAt).getTime() : null;
   const endsAt = item.endsAt ? new Date(item.endsAt).getTime() : null;
 
   if (startsAt && now < startsAt) {
     return "예정";
   }
-  // 시작일 전이면 예정 상태
 
   if (endsAt && now > endsAt) {
     return "종료";
   }
-  // 종료일이 지났으면 종료 상태
 
   return "노출 중";
-  // 그 외에는 실제 노출 중
+}
+
+function sanitizeFileName(name: string) {
+  // 파일명을 Storage 경로에 안전하게 넣기 위해 간단히 정리하는 함수
+
+  return name.replace(/[^\w.\-]+/g, "_");
 }
 
 export default function AdminNoticesPage() {
@@ -188,17 +196,21 @@ export default function AdminNoticesPage() {
   const [saving, setSaving] = useState(false);
   // 저장(생성/수정) 처리 중 상태
 
+  const [uploadingImage, setUploadingImage] = useState(false);
+  // 이미지 업로드 처리 중 상태
+
   const [busyId, setBusyId] = useState<string | null>(null);
-  // 삭제 등 개별 공지 처리 중 id
+  // 개별 공지 삭제 처리 중 id
 
   const [message, setMessage] = useState<NoticeMessage | null>(null);
   // 화면 상단 알림 메시지 상태
 
+  const [imageFile, setImageFile] = useState<File | null>(null);
+  // 현재 선택된 이미지 파일 상태
+  // 저장 버튼 누르기 전에 Storage 업로드에 사용
+
   const loadNotices = useCallback(async () => {
     // 공지 목록을 서버에서 불러오는 함수
-
-    setMessage(null);
-    // 이전 메시지 초기화
 
     setLoading(true);
     // 로딩 시작
@@ -210,11 +222,10 @@ export default function AdminNoticesPage() {
       const res = await fetch("/api/admin/notices", {
         headers: {
           Authorization: `Bearer ${token}`,
-          // 관리자 인증 토큰 전달
         },
         cache: "no-store",
-        // 공지 상태를 항상 최신으로 보기 위해 캐시 비활성화
       });
+      // 공지 목록 API 요청
 
       const data = await res.json();
       // 응답 JSON 파싱
@@ -246,16 +257,11 @@ export default function AdminNoticesPage() {
   }, [loadNotices]);
 
   const resetForm = () => {
-    // 폼을 초기 상태로 되돌리는 함수
+    // 작성 폼을 초기 상태로 되돌리는 함수
 
     setForm(initialForm);
-    // 작성 기본값으로 초기화
-
     setEditingId(null);
-    // 수정 모드 해제
-
-    setMessage(null);
-    // 메시지 초기화
+    setImageFile(null);
   };
 
   const startEdit = (item: AdminNoticeRow) => {
@@ -267,6 +273,7 @@ export default function AdminNoticesPage() {
     setForm({
       title: item.title,
       content: item.content,
+      imageUrl: item.imageUrl ?? "",
       isActive: item.isActive,
       isPopup: item.isPopup,
       priority: item.priority,
@@ -275,8 +282,52 @@ export default function AdminNoticesPage() {
     });
     // 선택한 공지 데이터를 폼에 채움
 
+    setImageFile(null);
+    // 기존 파일 선택 상태는 초기화
+
     setMessage(null);
     // 이전 메시지 초기화
+  };
+
+  const uploadImageIfNeeded = async () => {
+    // 이미지 파일이 선택되어 있으면 Firebase Storage에 업로드하고
+    // 다운로드 URL을 반환하는 함수
+    // 선택된 파일이 없으면 기존 form.imageUrl 을 그대로 반환
+
+    if (!imageFile) {
+      return form.imageUrl.trim() || null;
+    }
+    // 새 파일이 없으면 기존 imageUrl 유지
+
+    setUploadingImage(true);
+    // 업로드 시작
+
+    try {
+      const ext = imageFile.name.split(".").pop() || "png";
+      // 파일 확장자 추출
+
+      const safeName = sanitizeFileName(imageFile.name);
+      // 경로용 파일명 정리
+
+      const filePath = `notices/${Date.now()}_${safeName}`;
+      // Storage 저장 경로 생성
+      // notices 폴더 아래 timestamp 기반으로 저장해서 충돌 방지
+
+      const storageRef = ref(storage, filePath);
+      // 해당 경로에 대한 Storage 참조 생성
+
+      await uploadBytes(storageRef, imageFile);
+      // 실제 파일 업로드 실행
+
+      const downloadUrl = await getDownloadURL(storageRef);
+      // 업로드된 파일의 다운로드 URL 획득
+
+      return downloadUrl;
+      // API 저장용 imageUrl 반환
+    } finally {
+      setUploadingImage(false);
+      // 업로드 종료
+    }
   };
 
   const onSubmit = async (e: React.FormEvent) => {
@@ -302,6 +353,10 @@ export default function AdminNoticesPage() {
       const token = await getIdTokenOrThrow();
       // 관리자 인증 토큰 가져오기
 
+      const imageUrl = await uploadImageIfNeeded();
+      // 새 파일이 있으면 먼저 Storage 업로드
+      // 없으면 기존 imageUrl 유지
+
       const isEditMode = Boolean(editingId);
       // 수정 모드 여부 판별
 
@@ -322,6 +377,7 @@ export default function AdminNoticesPage() {
         body: JSON.stringify({
           title: form.title.trim(),
           content: form.content.trim(),
+          imageUrl,
           isActive: form.isActive,
           isPopup: form.isPopup,
           priority: Number(form.priority),
@@ -343,7 +399,7 @@ export default function AdminNoticesPage() {
       }
 
       await loadNotices();
-      // 저장 후 목록을 다시 불러와서 최신 상태 반영
+      // 저장 후 목록 다시 조회
 
       setMessage({
         type: "success",
@@ -370,20 +426,14 @@ export default function AdminNoticesPage() {
     // 특정 공지를 삭제하는 함수
 
     const ok = confirm("정말 이 공지사항을 삭제하시겠습니까?");
-    // 사용자 확인창 표시
 
     if (!ok) return;
-    // 취소 시 중단
 
     setMessage(null);
-    // 이전 메시지 초기화
-
     setBusyId(noticeId);
-    // 현재 처리 중인 공지 id 저장
 
     try {
       const token = await getIdTokenOrThrow();
-      // 관리자 인증 토큰 가져오기
 
       const res = await fetch(`/api/admin/notices/${noticeId}`, {
         method: "DELETE",
@@ -391,10 +441,8 @@ export default function AdminNoticesPage() {
           Authorization: `Bearer ${token}`,
         },
       });
-      // 삭제 API 요청
 
       const data = await res.json();
-      // 응답 JSON 파싱
 
       if (!res.ok || !data.ok) {
         setMessage({
@@ -456,7 +504,7 @@ export default function AdminNoticesPage() {
             </h1>
 
             <p className="mt-3 text-base leading-7 text-zinc-500">
-              메인 홈에 뜨는 광고형 팝업 공지까지 여기서 한 번에 관리할 수 있어요.
+              메인 홈에 뜨는 팝업 공지를 이미지 포함 형태로 관리할 수 있어요.
             </p>
           </div>
 
@@ -487,7 +535,7 @@ export default function AdminNoticesPage() {
                 {editingId ? "공지 수정" : "공지 등록"}
               </h2>
               <p className="mt-2 text-sm text-zinc-500">
-                제목, 본문, 팝업 여부, 노출 기간을 설정해 주세요.
+                제목, 본문, 이미지, 팝업 여부, 노출 기간을 설정해 주세요.
               </p>
             </div>
 
@@ -531,6 +579,37 @@ export default function AdminNoticesPage() {
                 className="w-full rounded-[16px] border border-zinc-200 bg-white px-4 py-3 text-sm outline-none transition focus:border-[#6c7cff]"
                 placeholder="팝업 본문 내용을 입력하세요"
               />
+            </div>
+
+            <div>
+              <label className="mb-2 block text-sm font-bold text-zinc-700">
+                이미지 파일
+              </label>
+
+              <input
+                type="file"
+                accept="image/*"
+                onChange={(e) => {
+                  const file = e.target.files?.[0] ?? null;
+                  setImageFile(file);
+                }}
+                className="block w-full text-sm text-zinc-700"
+              />
+              {/* 공지 이미지 파일 선택 input */}
+
+              <p className="mt-2 text-xs text-zinc-500">
+                새 이미지를 선택하면 저장 시 Firebase Storage에 업로드돼요.
+              </p>
+
+              {(imageFile || form.imageUrl) && (
+                <div className="mt-4 overflow-hidden rounded-[16px] border border-zinc-200 bg-zinc-50">
+                  <img
+                    src={imageFile ? URL.createObjectURL(imageFile) : form.imageUrl}
+                    alt="공지 미리보기"
+                    className="max-h-[240px] w-full object-cover"
+                  />
+                </div>
+              )}
             </div>
 
             <div className="grid gap-4 sm:grid-cols-2">
@@ -627,10 +706,12 @@ export default function AdminNoticesPage() {
             <div className="flex flex-wrap gap-3">
               <button
                 type="submit"
-                disabled={saving}
+                disabled={saving || uploadingImage}
                 className="h-[54px] rounded-[16px] bg-[linear-gradient(135deg,#6c7cff_0%,#57c7ff_100%)] px-6 text-sm font-bold text-white shadow-lg transition hover:opacity-90 disabled:opacity-60"
               >
-                {saving
+                {uploadingImage
+                  ? "이미지 업로드 중..."
+                  : saving
                   ? editingId
                     ? "수정 중..."
                     : "등록 중..."
@@ -668,10 +749,11 @@ export default function AdminNoticesPage() {
           </div>
 
           <div className="overflow-x-auto">
-            <table className="min-w-[1200px] w-full text-[15px]">
+            <table className="min-w-[1320px] w-full text-[15px]">
               <thead className="bg-[linear-gradient(90deg,#f7f8ff_0%,#fff7fb_55%,#f3fffb_100%)] text-left text-[#4f596a]">
                 <tr>
                   <th className="px-8 py-4 font-semibold">제목</th>
+                  <th className="px-8 py-4 font-semibold">이미지</th>
                   <th className="px-8 py-4 font-semibold">본문</th>
                   <th className="px-8 py-4 font-semibold">상태</th>
                   <th className="px-8 py-4 font-semibold">팝업</th>
@@ -686,7 +768,7 @@ export default function AdminNoticesPage() {
                 {loading ? (
                   Array.from({ length: 5 }).map((_, i) => (
                     <tr key={i}>
-                      <td colSpan={8} className="px-8 py-5">
+                      <td colSpan={9} className="px-8 py-5">
                         <div className="h-12 animate-pulse rounded-[14px] bg-zinc-100" />
                       </td>
                     </tr>
@@ -694,7 +776,7 @@ export default function AdminNoticesPage() {
                 ) : items.length === 0 ? (
                   <tr>
                     <td
-                      colSpan={8}
+                      colSpan={9}
                       className="px-8 py-16 text-center text-base text-zinc-500"
                     >
                       등록된 공지가 없습니다.
@@ -708,15 +790,27 @@ export default function AdminNoticesPage() {
                     return (
                       <tr key={item.id} className="hover:bg-zinc-50/70">
                         <td className="px-8 py-5 align-top">
-                          <div className="max-w-[240px]">
+                          <div className="max-w-[220px]">
                             <p className="font-bold text-zinc-900">
                               {item.title}
                             </p>
                           </div>
                         </td>
 
+                        <td className="px-8 py-5 align-top">
+                          {item.imageUrl ? (
+                            <img
+                              src={item.imageUrl}
+                              alt={item.title}
+                              className="h-16 w-24 rounded-[12px] object-cover"
+                            />
+                          ) : (
+                            <span className="text-sm text-zinc-400">없음</span>
+                          )}
+                        </td>
+
                         <td className="px-8 py-5 align-top text-zinc-600">
-                          <div className="max-w-[360px] whitespace-pre-wrap break-words leading-6">
+                          <div className="max-w-[320px] whitespace-pre-wrap break-words leading-6">
                             {truncateText(item.content, 140)}
                           </div>
                         </td>

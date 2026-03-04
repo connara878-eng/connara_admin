@@ -10,6 +10,7 @@
 // {
 //   title: string,
 //   content: string,
+//   imageUrl: string | null,
 //   isActive: boolean,
 //   isPopup: boolean,
 //   priority: number,
@@ -43,7 +44,7 @@ function isAdminUid(uid: string) {
   // 콤마로 분리 → 공백 제거 → 빈값 제거
 
   return list.includes(uid);
-  // 관리자 uid 목록에 포함되면 true
+  // 관리자 uid 목록에 포함되면 true 반환
 }
 
 async function requireAdmin(req: Request) {
@@ -55,7 +56,7 @@ async function requireAdmin(req: Request) {
   const token = authHeader.startsWith("Bearer ")
     ? authHeader.slice("Bearer ".length)
     : "";
-  // Bearer 접두사를 제거해서 토큰만 추출
+  // Bearer 접두사 제거 후 토큰만 추출
 
   if (!token) {
     throw new Error("NO_TOKEN");
@@ -100,7 +101,7 @@ function toIso(value: any) {
 }
 
 function toMillis(value: any) {
-  // 정렬용 timestamp 숫자로 바꾸는 함수
+  // 정렬용 숫자 timestamp(ms)로 바꾸는 함수
 
   if (!value) return 0;
 
@@ -121,35 +122,63 @@ function toMillis(value: any) {
 }
 
 function parseOptionalDate(value: unknown) {
-  // datetime-local 문자열 또는 null/빈값을 Date | null 로 바꾸는 함수
+  // datetime-local 문자열 또는 null/빈값을 Date | null 로 변환하는 함수
 
   if (value === null || value === undefined) {
     return null;
   }
+  // null/undefined면 null 처리
 
   if (typeof value !== "string") {
     throw new Error("BAD_REQUEST");
   }
+  // 문자열이 아니면 잘못된 요청
 
   const trimmed = value.trim();
 
   if (!trimmed) {
     return null;
   }
+  // 빈 문자열이면 null 처리
 
   const date = new Date(trimmed);
 
   if (Number.isNaN(date.getTime())) {
     throw new Error("BAD_REQUEST");
   }
+  // 날짜 파싱 실패 시 잘못된 요청 처리
 
   return date;
 }
 
-function mapNoticeDoc(doc: FirebaseFirestore.QueryDocumentSnapshot) {
+function parseOptionalImageUrl(value: unknown) {
+  // imageUrl 입력값을 string | null 로 정리하는 함수
+
+  if (value === null || value === undefined) {
+    return null;
+  }
+  // 값이 없으면 null
+
+  if (typeof value !== "string") {
+    throw new Error("BAD_REQUEST");
+  }
+  // 문자열이 아니면 잘못된 요청
+
+  const trimmed = value.trim();
+
+  if (!trimmed) {
+    return null;
+  }
+  // 빈 문자열이면 null
+
+  return trimmed;
+  // 문자열이면 그대로 반환
+}
+
+function mapNoticeDoc(doc: any) {
   // Firestore 공지 문서를 클라이언트에서 쓰기 쉬운 형태로 변환하는 함수
 
-  const data = doc.data();
+  const data = doc.data() ?? {};
 
   return {
     id: doc.id,
@@ -161,18 +190,20 @@ function mapNoticeDoc(doc: FirebaseFirestore.QueryDocumentSnapshot) {
     content: data.content ?? "",
     // 공지 본문
 
+    imageUrl: data.imageUrl ?? null,
+    // 팝업 이미지 URL
+
     isActive: Boolean(data.isActive),
-    // 현재 활성화 여부
+    // 활성 여부
 
     isPopup: Boolean(data.isPopup),
-    // 팝업 노출 여부
+    // 팝업 여부
 
     priority:
       typeof data.priority === "number" && Number.isFinite(data.priority)
         ? data.priority
         : 0,
-    // 우선순위
-    // 숫자가 작을수록 먼저 노출되도록 사용할 예정
+    // 우선순위 숫자 정리
 
     startsAt: toIso(data.startsAt),
     // 노출 시작일
@@ -199,7 +230,6 @@ function createErrorResponse(error: unknown) {
       { status: 403 }
     );
   }
-  // 관리자 권한 없음
 
   if (msg.includes("NO_TOKEN")) {
     return NextResponse.json(
@@ -207,7 +237,6 @@ function createErrorResponse(error: unknown) {
       { status: 401 }
     );
   }
-  // 인증 토큰 없음
 
   if (msg.includes("BAD_REQUEST")) {
     return NextResponse.json(
@@ -215,13 +244,11 @@ function createErrorResponse(error: unknown) {
       { status: 400 }
     );
   }
-  // 요청 body 형식이 잘못된 경우
 
   return NextResponse.json(
     { ok: false, error: "공지사항 처리 실패" },
     { status: 500 }
   );
-  // 그 외 서버 오류
 }
 
 export async function GET(req: Request) {
@@ -231,7 +258,6 @@ export async function GET(req: Request) {
 
     const snap = await adminDb.collection("notices").get();
     // notices 컬렉션 전체 조회
-    // 데이터가 아주 많지 않은 공지 관리 기준에서는 전체 조회 후 서버 정렬로 충분
 
     const notices = snap.docs
       .map(mapNoticeDoc)
@@ -280,11 +306,16 @@ export async function POST(req: Request) {
     const content = typeof body.content === "string" ? body.content.trim() : "";
     // 본문 문자열 정리
 
-    const isActive = Boolean(body.isActive);
-    // 활성화 여부 boolean 변환
+    const imageUrl = parseOptionalImageUrl(body.imageUrl);
+    // 이미지 URL 정리
+    // 파일 업로드는 관리자 페이지에서 먼저 Storage 업로드 후
+    // 여기에는 다운로드 URL 문자열만 넘어오게 됨
 
-    const isPopup = Boolean(body.isPopup);
-    // 팝업 여부 boolean 변환
+    const isActive = typeof body.isActive === "boolean" ? body.isActive : false;
+    // 활성 여부
+
+    const isPopup = typeof body.isPopup === "boolean" ? body.isPopup : false;
+    // 팝업 여부
 
     const priority = Number(body.priority);
     // 우선순위 숫자 변환
@@ -311,11 +342,12 @@ export async function POST(req: Request) {
     // 시작일이 종료일보다 뒤면 잘못된 요청
 
     const now = new Date();
-    // 생성/수정 시각에 공통 사용
+    // 생성/수정 시각 공통 사용
 
     const ref = await adminDb.collection("notices").add({
       title,
       content,
+      imageUrl,
       isActive,
       isPopup,
       priority,
@@ -324,22 +356,17 @@ export async function POST(req: Request) {
       createdAt: now,
       updatedAt: now,
     });
-    // notices 컬렉션에 새 공지 문서 생성
+    // notices 컬렉션에 새 공지 저장
 
     const saved = await ref.get();
-    // 생성 직후 문서를 다시 읽어서 응답에 사용
+    // 저장 직후 다시 조회
 
     return NextResponse.json({
       ok: true,
-      notice: {
-        // id: saved.id
-        saved,
-        ...mapNoticeDoc(
-          saved as FirebaseFirestore.QueryDocumentSnapshot<FirebaseFirestore.DocumentData>
-        ),
-      },
+      notice: mapNoticeDoc(saved),
     });
-    // 생성된 공지 반환
+    // 저장된 공지 데이터만 JSON으로 안전하게 반환
+    // 이전처럼 Firestore snapshot 객체 자체를 넣지 않음
   } catch (error) {
     return createErrorResponse(error);
   }
