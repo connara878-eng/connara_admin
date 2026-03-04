@@ -1142,12 +1142,6 @@ export default function AdminPostsPage() {
           </table>
         </div>
       </div>
-
-      <div className="rounded-[20px] border border-amber-200 bg-amber-50 px-6 py-4 text-sm leading-7 text-amber-800">
-        첨부파일은 현재 Firestore 문서 기준으로만 관리돼요.
-        <br />
-        게시글 삭제 시 Storage 실제 파일까지 자동 삭제하는 기능은 아직 넣지 않았어요.
-      </div>
     </section>
   );
 }

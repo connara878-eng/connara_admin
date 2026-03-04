@@ -1,325 +1,796 @@
 "use client";
 
-// 경로: components/admin/AdminShell.tsx
+// app/admin/notices/page.tsx
 
-import Link from "next/link";
-// 왼쪽 메뉴를 눌렀을 때 각 관리자 페이지로 이동시키기 위해 Link 사용
+// 관리자 공지사항 관리 페이지
+// - 공지 목록 조회
+// - 공지 생성 / 수정 / 삭제
+// - 활성화 여부 / 팝업 여부 / 우선순위 / 노출 시작일 / 종료일 관리
+// - 메인 홈에서 바로 뜨는 팝업형 공지를 만들 수 있도록 구성
 
-import { usePathname, useRouter } from "next/navigation";
-// usePathname: 현재 주소가 어떤 메뉴인지 확인해서 활성 메뉴 표시할 때 사용
-// useRouter: 로그아웃 후 로그인 페이지로 이동시키기 위해 사용
-
-import {
-  createContext,
-  useContext,
-  useEffect,
-  useMemo,
-  useState,
-} from "react";
-// createContext / useContext: 현재 로그인한 관리자 정보를 하위 페이지와 공유
-// useEffect: 로그인 상태 감지 + 관리자 권한 체크
-// useMemo: 메뉴 배열을 고정해서 불필요한 재생성 방지
-// useState: checking, admin 상태 관리
+import { useCallback, useEffect, useMemo, useState } from "react";
+// React 훅들
+// - useState: 폼 / 목록 / 로딩 / 알림 / 수정모드 상태 관리
+// - useEffect: 최초 진입 시 공지 목록 자동 조회
+// - useCallback: API 호출 함수 재생성 최소화
+// - useMemo: 요약 수치 계산 최적화
 
 import { auth } from "@/lib/firebase.client";
-// Firebase 클라이언트 Auth 인스턴스 사용
+// 현재 로그인한 관리자 계정의 Firebase ID Token을 가져오기 위해 사용
+// 관리자 API 호출 시 Authorization 헤더에 Bearer 토큰으로 전달
 
-import { onAuthStateChanged, signOut } from "firebase/auth";
-// onAuthStateChanged: 현재 로그인 상태를 감지
-// signOut: 로그아웃 처리
+type AdminNoticeRow = {
+  id: string;
+  // 공지 문서 id
 
-type AdminMe = {
-  uid: string;
-  // 현재 로그인한 관리자 uid
+  title: string;
+  // 공지 제목
 
-  email: string | null;
-  // 현재 로그인한 관리자 email
+  content: string;
+  // 공지 본문
+
+  isActive: boolean;
+  // 현재 활성화 여부
+
+  isPopup: boolean;
+  // 팝업 공지 여부
+
+  priority: number;
+  // 우선순위
+  // 숫자가 작을수록 먼저 노출
+
+  startsAt: string | null;
+  // 노출 시작일 ISO 문자열
+
+  endsAt: string | null;
+  // 노출 종료일 ISO 문자열
+
+  createdAt: string | null;
+  // 생성일 ISO 문자열
+
+  updatedAt: string | null;
+  // 수정일 ISO 문자열
 };
 
-type AdminContextValue = {
-  admin: AdminMe | null;
-  // 하위 페이지에 넘겨줄 관리자 정보
+type NoticeFormState = {
+  title: string;
+  content: string;
+  isActive: boolean;
+  isPopup: boolean;
+  priority: number;
+  startsAt: string;
+  endsAt: string;
 };
 
-const AdminContext = createContext<AdminContextValue>({
-  admin: null,
-});
-// 기본값은 아직 관리자 정보가 없는 상태
+type NoticeMessage = {
+  type: "success" | "error";
+  text: string;
+};
 
-export function useAdmin() {
-  // 하위 페이지에서 useAdmin()만 호출하면
-  // 현재 관리자 정보를 쉽게 꺼내 쓸 수 있게 만든 훅
-  return useContext(AdminContext);
+const initialForm: NoticeFormState = {
+  title: "",
+  content: "",
+  isActive: true,
+  isPopup: true,
+  priority: 0,
+  startsAt: "",
+  endsAt: "",
+};
+// 공지 작성 기본값
+// - 기본적으로 활성화 + 팝업 공지 상태로 시작
+
+async function getIdTokenOrThrow() {
+  // 현재 로그인한 관리자 계정의 Firebase ID Token을 가져오는 함수
+
+  const user = auth.currentUser;
+  // 현재 로그인한 관리자 유저 정보 읽기
+
+  if (!user) {
+    throw new Error("NO_LOGIN");
+  }
+  // 로그인 정보가 없으면 예외 처리
+
+  return await user.getIdToken();
+  // Firebase ID Token 반환
 }
 
-export default function AdminShell({
-  children,
-}: {
-  children: React.ReactNode;
-}) {
-  const router = useRouter();
-  // 로그아웃 후 로그인 페이지로 이동할 때 사용
+function formatDate(value: string | null) {
+  // ISO 문자열을 한국식 보기 좋은 날짜 포맷으로 바꾸는 함수
 
-  const pathname = usePathname();
-  // 현재 경로를 읽어서 어떤 메뉴가 활성화인지 판단할 때 사용
+  if (!value) return "-";
+  // 값이 없으면 하이픈 표시
 
-  const [checking, setChecking] = useState(true);
-  // 관리자 권한을 확인 중인지 여부
-  // true이면 본문 대신 확인 중 화면을 보여줌
+  const d = new Date(value);
 
-  const [admin, setAdmin] = useState<AdminMe | null>(null);
-  // 서버에서 관리자 권한 확인이 끝난 사용자 정보 저장
+  if (Number.isNaN(d.getTime())) {
+    return value;
+  }
+  // 변환 실패 시 원본 문자열 반환
 
-  useEffect(() => {
-    let alive = true;
-    // 비동기 작업 도중 컴포넌트가 사라졌을 때 state 업데이트 막는 안전장치
+  return new Intl.DateTimeFormat("ko-KR", {
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+  }).format(d);
+  // 한국 시간 포맷으로 반환
+}
 
-    const unsub = onAuthStateChanged(auth, async (user) => {
-      // Firebase 로그인 상태가 바뀔 때마다 실행됨
+function toInputDateTime(value: string | null) {
+  // ISO 문자열을 datetime-local input 값 형태로 바꾸는 함수
+  // 예: 2026-03-04T15:30
 
-      if (!user) {
-        // 로그인된 사용자가 없으면 관리자 페이지를 볼 수 없으므로
+  if (!value) return "";
 
-        if (alive) setChecking(false);
-        // 확인 과정 종료
+  const d = new Date(value);
 
-        router.replace("/");
-        // 로그인 페이지로 이동
+  if (Number.isNaN(d.getTime())) return "";
 
+  const yyyy = d.getFullYear();
+  const mm = String(d.getMonth() + 1).padStart(2, "0");
+  const dd = String(d.getDate()).padStart(2, "0");
+  const hh = String(d.getHours()).padStart(2, "0");
+  const mi = String(d.getMinutes()).padStart(2, "0");
+
+  return `${yyyy}-${mm}-${dd}T${hh}:${mi}`;
+}
+
+function truncateText(value: string, max = 120) {
+  // 공지 본문을 목록에서 너무 길지 않게 잘라주는 함수
+
+  if (!value) return "";
+
+  if (value.length <= max) return value;
+
+  return `${value.slice(0, max)}...`;
+}
+
+function getStatusLabel(item: AdminNoticeRow) {
+  // 공지의 현재 상태를 사용자 친화적인 텍스트로 표시하는 함수
+
+  if (!item.isActive) return "비활성";
+
+  const now = Date.now();
+  // 현재 시각
+
+  const startsAt = item.startsAt ? new Date(item.startsAt).getTime() : null;
+  const endsAt = item.endsAt ? new Date(item.endsAt).getTime() : null;
+
+  if (startsAt && now < startsAt) {
+    return "예정";
+  }
+  // 시작일 전이면 예정 상태
+
+  if (endsAt && now > endsAt) {
+    return "종료";
+  }
+  // 종료일이 지났으면 종료 상태
+
+  return "노출 중";
+  // 그 외에는 실제 노출 중
+}
+
+export default function AdminNoticesPage() {
+  const [items, setItems] = useState<AdminNoticeRow[]>([]);
+  // 공지 목록 상태
+
+  const [form, setForm] = useState<NoticeFormState>(initialForm);
+  // 공지 작성 / 수정 폼 상태
+
+  const [editingId, setEditingId] = useState<string | null>(null);
+  // 현재 수정 중인 공지 id
+  // null이면 새 공지 작성 모드
+
+  const [loading, setLoading] = useState(true);
+  // 목록 로딩 상태
+
+  const [saving, setSaving] = useState(false);
+  // 저장(생성/수정) 처리 중 상태
+
+  const [busyId, setBusyId] = useState<string | null>(null);
+  // 삭제 등 개별 공지 처리 중 id
+
+  const [message, setMessage] = useState<NoticeMessage | null>(null);
+  // 화면 상단 알림 메시지 상태
+
+  const loadNotices = useCallback(async () => {
+    // 공지 목록을 서버에서 불러오는 함수
+
+    setMessage(null);
+    // 이전 메시지 초기화
+
+    setLoading(true);
+    // 로딩 시작
+
+    try {
+      const token = await getIdTokenOrThrow();
+      // 관리자 인증 토큰 가져오기
+
+      const res = await fetch("/api/admin/notices", {
+        headers: {
+          Authorization: `Bearer ${token}`,
+          // 관리자 인증 토큰 전달
+        },
+        cache: "no-store",
+        // 공지 상태를 항상 최신으로 보기 위해 캐시 비활성화
+      });
+
+      const data = await res.json();
+      // 응답 JSON 파싱
+
+      if (!res.ok || !data.ok) {
+        setMessage({
+          type: "error",
+          text: data?.error ?? "공지 목록 조회 실패",
+        });
         return;
       }
 
-      try {
-        const token = await user.getIdToken();
-        // 현재 로그인된 유저의 Firebase ID Token 발급
-        // 이 토큰을 서버에 보내서 진짜 관리자 권한인지 확인
+      setItems(data.notices ?? []);
+      // 공지 목록 상태 반영
+    } catch {
+      setMessage({
+        type: "error",
+        text: "공지 목록 조회 실패",
+      });
+    } finally {
+      setLoading(false);
+      // 로딩 종료
+    }
+  }, []);
 
-        const res = await fetch("/api/admin/me", {
-          headers: {
-            Authorization: `Bearer ${token}`,
-            // 관리자 확인 API에 Bearer 토큰 전달
-          },
-          cache: "no-store",
-          // 캐시 없이 항상 최신 권한 상태를 조회
-        });
+  useEffect(() => {
+    loadNotices();
+    // 최초 진입 시 공지 목록 자동 조회
+  }, [loadNotices]);
 
-        const data = await res.json().catch(() => null);
-        // 응답을 JSON으로 파싱
-        // 혹시 파싱 실패하면 null 처리
+  const resetForm = () => {
+    // 폼을 초기 상태로 되돌리는 함수
 
-        if (!res.ok || !data?.ok) {
-          // 서버가 관리자 권한이 없다고 판단했거나
-          // 응답 자체가 실패했으면
+    setForm(initialForm);
+    // 작성 기본값으로 초기화
 
-          await signOut(auth).catch(() => {});
-          // 혹시 로그인은 되어 있어도 관리자 권한 없는 계정이면 로그아웃
+    setEditingId(null);
+    // 수정 모드 해제
 
-          router.replace("/");
-          // 로그인 페이지로 이동
+    setMessage(null);
+    // 메시지 초기화
+  };
 
-          return;
-        }
+  const startEdit = (item: AdminNoticeRow) => {
+    // 특정 공지를 수정 모드로 전환하는 함수
 
-        if (alive) {
-          setAdmin({
-            uid: data.uid,
-            // 서버가 확인해준 관리자 uid 저장
+    setEditingId(item.id);
+    // 수정 중인 공지 id 저장
 
-            email: data.email ?? null,
-            // 서버가 확인해준 관리자 email 저장
-          });
-        }
-      } catch {
-        // 토큰 발급, 서버 요청, 권한 확인 중 에러가 나면
-
-        await signOut(auth).catch(() => {});
-        // 안전하게 로그아웃 처리
-
-        router.replace("/");
-        // 로그인 페이지로 이동
-      } finally {
-        if (alive) setChecking(false);
-        // 성공/실패와 상관없이 확인 과정 종료
-      }
+    setForm({
+      title: item.title,
+      content: item.content,
+      isActive: item.isActive,
+      isPopup: item.isPopup,
+      priority: item.priority,
+      startsAt: toInputDateTime(item.startsAt),
+      endsAt: toInputDateTime(item.endsAt),
     });
+    // 선택한 공지 데이터를 폼에 채움
 
-    return () => {
-      alive = false;
-      // 컴포넌트가 사라졌다고 표시
+    setMessage(null);
+    // 이전 메시지 초기화
+  };
 
-      unsub();
-      // 로그인 상태 감지 구독 해제
-    };
-  }, [router]);
+  const onSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    // 폼 기본 새로고침 방지
 
-  const menus = useMemo(
-    () => [
-      {
-        href: "/admin/users",
-        label: "회원 관리",
-        color:
-          "bg-[linear-gradient(135deg,#7C8CFF_0%,#5BC6FF_50%,#63E6BE_100%)]",
-      },
-      // 회원관리 메뉴
-      // 가장 먼저 들어와서 기본 선택될 메뉴
+    setMessage(null);
+    // 이전 메시지 초기화
 
-      {
-        href: "/admin/posts",
-        label: "게시글 관리",
-        color:
-          "bg-[linear-gradient(135deg,#FF8DA1_0%,#FFB36B_100%)]",
-      },
-      // 게시글 관리 메뉴
+    if (!form.title.trim() || !form.content.trim()) {
+      setMessage({
+        type: "error",
+        text: "제목과 내용을 입력해 주세요.",
+      });
+      return;
+    }
+    // 제목/내용 필수 입력 검증
 
-      {
-        href: "/admin/notices",
-        label: "공지사항 관리",
-        color:
-          "bg-[linear-gradient(135deg,#9B8CFF_0%,#FF8FD8_100%)]",
-      },
-      // 공지사항 관리 메뉴
-    ],
-    []
+    setSaving(true);
+    // 저장 시작
+
+    try {
+      const token = await getIdTokenOrThrow();
+      // 관리자 인증 토큰 가져오기
+
+      const isEditMode = Boolean(editingId);
+      // 수정 모드 여부 판별
+
+      const url = isEditMode
+        ? `/api/admin/notices/${editingId}`
+        : "/api/admin/notices";
+      // 생성/수정에 따라 API URL 선택
+
+      const method = isEditMode ? "PATCH" : "POST";
+      // 생성/수정에 따라 HTTP method 선택
+
+      const res = await fetch(url, {
+        method,
+        headers: {
+          Authorization: `Bearer ${token}`,
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          title: form.title.trim(),
+          content: form.content.trim(),
+          isActive: form.isActive,
+          isPopup: form.isPopup,
+          priority: Number(form.priority),
+          startsAt: form.startsAt || null,
+          endsAt: form.endsAt || null,
+        }),
+      });
+      // 공지 생성/수정 요청 전송
+
+      const data = await res.json();
+      // 응답 JSON 파싱
+
+      if (!res.ok || !data.ok) {
+        setMessage({
+          type: "error",
+          text: data?.error ?? "공지 저장 실패",
+        });
+        return;
+      }
+
+      await loadNotices();
+      // 저장 후 목록을 다시 불러와서 최신 상태 반영
+
+      setMessage({
+        type: "success",
+        text: isEditMode
+          ? "공지사항을 수정했어요."
+          : "공지사항을 생성했어요.",
+      });
+      // 성공 메시지 표시
+
+      resetForm();
+      // 폼 초기화
+    } catch {
+      setMessage({
+        type: "error",
+        text: "공지 저장 실패",
+      });
+    } finally {
+      setSaving(false);
+      // 저장 종료
+    }
+  };
+
+  const deleteNotice = async (noticeId: string) => {
+    // 특정 공지를 삭제하는 함수
+
+    const ok = confirm("정말 이 공지사항을 삭제하시겠습니까?");
+    // 사용자 확인창 표시
+
+    if (!ok) return;
+    // 취소 시 중단
+
+    setMessage(null);
+    // 이전 메시지 초기화
+
+    setBusyId(noticeId);
+    // 현재 처리 중인 공지 id 저장
+
+    try {
+      const token = await getIdTokenOrThrow();
+      // 관리자 인증 토큰 가져오기
+
+      const res = await fetch(`/api/admin/notices/${noticeId}`, {
+        method: "DELETE",
+        headers: {
+          Authorization: `Bearer ${token}`,
+        },
+      });
+      // 삭제 API 요청
+
+      const data = await res.json();
+      // 응답 JSON 파싱
+
+      if (!res.ok || !data.ok) {
+        setMessage({
+          type: "error",
+          text: data?.error ?? "공지 삭제 실패",
+        });
+        return;
+      }
+
+      setItems((prev) => prev.filter((item) => item.id !== noticeId));
+      // 목록 상태에서 해당 공지 제거
+
+      if (editingId === noticeId) {
+        resetForm();
+      }
+      // 수정 중이던 공지를 삭제한 경우 폼도 초기화
+
+      setMessage({
+        type: "success",
+        text: "공지사항을 삭제했어요.",
+      });
+    } catch {
+      setMessage({
+        type: "error",
+        text: "공지 삭제 실패",
+      });
+    } finally {
+      setBusyId(null);
+      // busy 상태 해제
+    }
+  };
+
+  const totalCount = useMemo(() => items.length, [items]);
+  // 전체 공지 수
+
+  const activeCount = useMemo(
+    () => items.filter((item) => item.isActive).length,
+    [items]
   );
-  // 메뉴 목록은 고정값이므로 useMemo로 한 번만 생성
+  // 활성 공지 수
 
-  if (checking) {
-    // 아직 관리자 권한 확인 중이면 전체 레이아웃 대신 로딩 화면만 표시
+  const popupCount = useMemo(
+    () => items.filter((item) => item.isPopup).length,
+    [items]
+  );
+  // 팝업 공지 수
 
-    return (
-      <div className="min-h-screen bg-[linear-gradient(180deg,#F5F7FF_0%,#FFF8FC_100%)]">
-        {/* 전체 배경을 부드러운 밝은 톤으로 설정 */}
-
-        <div className="grid min-h-screen place-items-center px-6">
-          {/* 화면 가운데에 카드가 오도록 중앙 정렬 */}
-
-          <div className="w-full max-w-xl rounded-[36px] bg-white p-10 text-center shadow-[0_30px_80px_rgba(15,23,42,0.08)]">
-            {/* 큼직한 중앙 카드 */}
-
-            <div className="mx-auto flex h-20 w-20 items-center justify-center rounded-[28px] bg-[linear-gradient(135deg,#7C8CFF_0%,#5BC6FF_100%)] text-3xl font-black text-white">
-              C
-            </div>
-            {/* 브랜드 느낌의 큰 아이콘 박스 */}
-
-            <h1 className="mt-5 text-2xl font-black text-zinc-900">
-              관리자 확인 중...
-            </h1>
-            {/* 로딩 제목 */}
-
-            <p className="mt-3 text-base text-zinc-500">
-              로그인 상태와 관리자 권한을 확인하고 있어요.
+  return (
+    <section className="space-y-8">
+      <div className="rounded-[32px] border border-white/70 bg-white/90 p-8 shadow-[0_25px_80px_rgba(17,24,39,0.08)]">
+        <div className="flex flex-col gap-6 2xl:flex-row 2xl:items-end 2xl:justify-between">
+          <div>
+            <p className="text-sm font-semibold uppercase tracking-[0.18em] text-[#6c7cff]">
+              Notices
             </p>
-            {/* 보조 설명 */}
+
+            <h1 className="mt-2 text-4xl font-black tracking-tight text-zinc-900">
+              공지사항 관리
+            </h1>
+
+            <p className="mt-3 text-base leading-7 text-zinc-500">
+              메인 홈에 뜨는 광고형 팝업 공지까지 여기서 한 번에 관리할 수 있어요.
+            </p>
+          </div>
+
+          <div className="grid gap-4 sm:grid-cols-3">
+            <div className="rounded-[24px] bg-[linear-gradient(135deg,#7b7fff_0%,#57c7ff_100%)] px-6 py-5 text-white shadow-lg">
+              <p className="text-sm font-semibold text-white/90">전체 공지</p>
+              <p className="mt-3 text-4xl font-black">{totalCount}</p>
+            </div>
+
+            <div className="rounded-[24px] bg-[linear-gradient(135deg,#43c97b_0%,#7be3b0_100%)] px-6 py-5 text-white shadow-lg">
+              <p className="text-sm font-semibold text-white/90">활성 공지</p>
+              <p className="mt-3 text-4xl font-black">{activeCount}</p>
+            </div>
+
+            <div className="rounded-[24px] bg-[linear-gradient(135deg,#ff8ca8_0%,#ffb199_100%)] px-6 py-5 text-white shadow-lg">
+              <p className="text-sm font-semibold text-white/90">팝업 공지</p>
+              <p className="mt-3 text-4xl font-black">{popupCount}</p>
+            </div>
           </div>
         </div>
       </div>
-    );
-  }
 
-  return (
-    <AdminContext.Provider value={{ admin }}>
-      {/* 하위 관리자 페이지들이 admin 정보를 공유할 수 있게 Provider로 감쌈 */}
+      <div className="grid gap-8 2xl:grid-cols-[520px_minmax(0,1fr)]">
+        <div className="rounded-[28px] border border-white/70 bg-white/90 p-8 shadow-[0_18px_60px_rgba(17,24,39,0.06)]">
+          <div className="flex items-center justify-between">
+            <div>
+              <h2 className="text-2xl font-black text-zinc-900">
+                {editingId ? "공지 수정" : "공지 등록"}
+              </h2>
+              <p className="mt-2 text-sm text-zinc-500">
+                제목, 본문, 팝업 여부, 노출 기간을 설정해 주세요.
+              </p>
+            </div>
 
-      <div className="min-h-screen bg-[linear-gradient(180deg,#F5F7FF_0%,#FFF8FC_100%)]">
-        {/* 전체 관리자 페이지 배경 */}
+            {editingId && (
+              <button
+                onClick={resetForm}
+                className="rounded-[14px] bg-zinc-100 px-4 py-2 text-sm font-bold text-zinc-800 transition hover:bg-zinc-200"
+              >
+                새 공지로 전환
+              </button>
+            )}
+          </div>
 
-        <div className="mx-auto grid min-h-screen max-w-[1900px] grid-cols-1 gap-6 p-6 xl:grid-cols-[340px_minmax(0,1fr)]">
-          {/* 큰 화면에서는 좌측 사이드바 + 우측 본문 2단 구조 */}
-          {/* 사이드바를 크게 보이게 하려고 340px로 넉넉하게 잡음 */}
+          <form onSubmit={onSubmit} className="mt-6 space-y-5">
+            <div>
+              <label className="mb-2 block text-sm font-bold text-zinc-700">
+                제목
+              </label>
 
-          <aside className="rounded-[38px] bg-white p-6 shadow-[0_30px_90px_rgba(15,23,42,0.08)]">
-            {/* 왼쪽 사이드바 전체 카드 */}
-            {/* 둥글고 크게 만들어서 일반 서비스 페이지 느낌이 나게 구성 */}
+              <input
+                value={form.title}
+                onChange={(e) =>
+                  setForm((prev) => ({ ...prev, title: e.target.value }))
+                }
+                className="h-[54px] w-full rounded-[16px] border border-zinc-200 bg-white px-4 text-sm outline-none transition focus:border-[#6c7cff]"
+                placeholder="공지 제목을 입력하세요"
+              />
+            </div>
 
-            <div className="rounded-[30px] bg-[linear-gradient(135deg,#7C8CFF_0%,#5BC6FF_50%,#63E6BE_100%)] p-6 text-white">
-              {/* 사이드바 상단 브랜드 영역 */}
+            <div>
+              <label className="mb-2 block text-sm font-bold text-zinc-700">
+                내용
+              </label>
 
-              <div className="flex h-16 w-16 items-center justify-center rounded-[24px] bg-white/20 text-2xl font-black">
-                C
+              <textarea
+                value={form.content}
+                onChange={(e) =>
+                  setForm((prev) => ({ ...prev, content: e.target.value }))
+                }
+                rows={8}
+                className="w-full rounded-[16px] border border-zinc-200 bg-white px-4 py-3 text-sm outline-none transition focus:border-[#6c7cff]"
+                placeholder="팝업 본문 내용을 입력하세요"
+              />
+            </div>
+
+            <div className="grid gap-4 sm:grid-cols-2">
+              <label className="flex items-center gap-3 rounded-[16px] border border-zinc-200 px-4 py-4">
+                <input
+                  type="checkbox"
+                  checked={form.isActive}
+                  onChange={(e) =>
+                    setForm((prev) => ({ ...prev, isActive: e.target.checked }))
+                  }
+                />
+                <span className="text-sm font-medium text-zinc-700">
+                  활성 공지
+                </span>
+              </label>
+
+              <label className="flex items-center gap-3 rounded-[16px] border border-zinc-200 px-4 py-4">
+                <input
+                  type="checkbox"
+                  checked={form.isPopup}
+                  onChange={(e) =>
+                    setForm((prev) => ({ ...prev, isPopup: e.target.checked }))
+                  }
+                />
+                <span className="text-sm font-medium text-zinc-700">
+                  팝업 공지
+                </span>
+              </label>
+            </div>
+
+            <div>
+              <label className="mb-2 block text-sm font-bold text-zinc-700">
+                우선순위
+              </label>
+
+              <input
+                type="number"
+                value={form.priority}
+                onChange={(e) =>
+                  setForm((prev) => ({
+                    ...prev,
+                    priority: Number(e.target.value),
+                  }))
+                }
+                className="h-[54px] w-full rounded-[16px] border border-zinc-200 bg-white px-4 text-sm outline-none transition focus:border-[#6c7cff]"
+                placeholder="0"
+              />
+            </div>
+
+            <div className="grid gap-4 sm:grid-cols-2">
+              <div>
+                <label className="mb-2 block text-sm font-bold text-zinc-700">
+                  노출 시작일
+                </label>
+
+                <input
+                  type="datetime-local"
+                  value={form.startsAt}
+                  onChange={(e) =>
+                    setForm((prev) => ({ ...prev, startsAt: e.target.value }))
+                  }
+                  className="h-[54px] w-full rounded-[16px] border border-zinc-200 bg-white px-4 text-sm outline-none transition focus:border-[#6c7cff]"
+                />
               </div>
-              {/* 큰 아이콘 박스 */}
 
-              <p className="mt-5 text-sm font-semibold uppercase tracking-[0.2em] text-white/80">
-                Connara Admin
-              </p>
-              {/* 작은 라벨 */}
+              <div>
+                <label className="mb-2 block text-sm font-bold text-zinc-700">
+                  노출 종료일
+                </label>
 
-              <h1 className="mt-2 text-3xl font-black leading-tight">
-                관리자
-                <br />
-                대시보드
-              </h1>
-              {/* 큰 제목 */}
+                <input
+                  type="datetime-local"
+                  value={form.endsAt}
+                  onChange={(e) =>
+                    setForm((prev) => ({ ...prev, endsAt: e.target.value }))
+                  }
+                  className="h-[54px] w-full rounded-[16px] border border-zinc-200 bg-white px-4 text-sm outline-none transition focus:border-[#6c7cff]"
+                />
+              </div>
             </div>
 
-            <div className="mt-6">
-              {/* 메뉴 영역 시작 */}
+            {message && (
+              <div
+                className={`rounded-[16px] px-4 py-3 text-sm font-medium ${
+                  message.type === "error"
+                    ? "border border-rose-200 bg-rose-50 text-rose-700"
+                    : "border border-emerald-200 bg-emerald-50 text-emerald-700"
+                }`}
+              >
+                {message.text}
+              </div>
+            )}
 
-              <p className="mb-4 px-2 text-sm font-bold text-zinc-400">
-                MENU
-              </p>
-              {/* 메뉴 구분 라벨 */}
+            <div className="flex flex-wrap gap-3">
+              <button
+                type="submit"
+                disabled={saving}
+                className="h-[54px] rounded-[16px] bg-[linear-gradient(135deg,#6c7cff_0%,#57c7ff_100%)] px-6 text-sm font-bold text-white shadow-lg transition hover:opacity-90 disabled:opacity-60"
+              >
+                {saving
+                  ? editingId
+                    ? "수정 중..."
+                    : "등록 중..."
+                  : editingId
+                  ? "공지 수정"
+                  : "공지 등록"}
+              </button>
 
-              <nav className="space-y-4">
-                {/* 메뉴 간격을 크게 둬서 한눈에 잘 보이게 함 */}
-
-                {menus.map((item) => {
-                  const active = pathname === item.href;
-                  // 현재 경로가 메뉴 href와 같으면 활성 메뉴 처리
-
-                  return (
-                    <Link
-                      key={item.href}
-                      href={item.href}
-                      className={`block rounded-[28px] px-6 py-6 text-xl font-black transition ${
-                        active
-                          ? `${item.color} text-white shadow-[0_18px_35px_rgba(0,0,0,0.12)]`
-                          : "bg-zinc-50 text-zinc-700 hover:bg-zinc-100"
-                      }`}
-                    >
-                      {item.label}
-                    </Link>
-                  );
-                })}
-              </nav>
+              <button
+                type="button"
+                onClick={resetForm}
+                className="h-[54px] rounded-[16px] bg-zinc-100 px-6 text-sm font-bold text-zinc-800 transition hover:bg-zinc-200"
+              >
+                초기화
+              </button>
             </div>
+          </form>
+        </div>
 
-            <div className="mt-8 rounded-[28px] bg-zinc-50 p-5">
-              {/* 로그인한 관리자 정보 박스 */}
-
-              <p className="text-xs font-semibold uppercase tracking-[0.16em] text-zinc-400">
-                Signed In
-              </p>
-
-              <p className="mt-3 break-all text-lg font-bold text-zinc-800">
-                {admin?.email ?? "관리자"}
+        <div className="rounded-[28px] border border-white/70 bg-white/90 shadow-[0_18px_60px_rgba(17,24,39,0.06)]">
+          <div className="flex flex-col gap-4 border-b border-zinc-100 px-8 py-6 xl:flex-row xl:items-center xl:justify-between">
+            <div>
+              <h2 className="text-2xl font-black text-zinc-900">공지 목록</h2>
+              <p className="mt-2 text-sm text-zinc-500">
+                메인 홈 팝업으로 노출될 공지들을 확인하고 수정할 수 있어요.
               </p>
             </div>
 
             <button
-              onClick={async () => {
-                // 로그아웃 버튼 클릭 시
-
-                await signOut(auth);
-                // Firebase 로그아웃 실행
-
-                router.replace("/");
-                // 로그인 페이지로 이동
-              }}
-              className="mt-5 h-[64px] w-full rounded-[24px] bg-zinc-900 text-lg font-bold text-white transition hover:opacity-90"
+              onClick={loadNotices}
+              className="h-[48px] rounded-[14px] bg-zinc-900 px-5 text-sm font-bold text-white transition hover:opacity-90"
             >
-              로그아웃
+              새로고침
             </button>
-          </aside>
+          </div>
 
-          <main className="min-w-0">
-            {/* 오른쪽 본문 영역 */}
-            {/* 실제 회원관리 / 게시글관리 / 공지사항 페이지 내용이 들어옴 */}
+          <div className="overflow-x-auto">
+            <table className="min-w-[1200px] w-full text-[15px]">
+              <thead className="bg-[linear-gradient(90deg,#f7f8ff_0%,#fff7fb_55%,#f3fffb_100%)] text-left text-[#4f596a]">
+                <tr>
+                  <th className="px-8 py-4 font-semibold">제목</th>
+                  <th className="px-8 py-4 font-semibold">본문</th>
+                  <th className="px-8 py-4 font-semibold">상태</th>
+                  <th className="px-8 py-4 font-semibold">팝업</th>
+                  <th className="px-8 py-4 font-semibold">우선순위</th>
+                  <th className="px-8 py-4 font-semibold">노출 기간</th>
+                  <th className="px-8 py-4 font-semibold">수정일</th>
+                  <th className="px-8 py-4 font-semibold">관리</th>
+                </tr>
+              </thead>
 
-            {children}
-          </main>
+              <tbody className="divide-y divide-zinc-100">
+                {loading ? (
+                  Array.from({ length: 5 }).map((_, i) => (
+                    <tr key={i}>
+                      <td colSpan={8} className="px-8 py-5">
+                        <div className="h-12 animate-pulse rounded-[14px] bg-zinc-100" />
+                      </td>
+                    </tr>
+                  ))
+                ) : items.length === 0 ? (
+                  <tr>
+                    <td
+                      colSpan={8}
+                      className="px-8 py-16 text-center text-base text-zinc-500"
+                    >
+                      등록된 공지가 없습니다.
+                    </td>
+                  </tr>
+                ) : (
+                  items.map((item) => {
+                    const isBusy = busyId === item.id;
+                    const statusLabel = getStatusLabel(item);
+
+                    return (
+                      <tr key={item.id} className="hover:bg-zinc-50/70">
+                        <td className="px-8 py-5 align-top">
+                          <div className="max-w-[240px]">
+                            <p className="font-bold text-zinc-900">
+                              {item.title}
+                            </p>
+                          </div>
+                        </td>
+
+                        <td className="px-8 py-5 align-top text-zinc-600">
+                          <div className="max-w-[360px] whitespace-pre-wrap break-words leading-6">
+                            {truncateText(item.content, 140)}
+                          </div>
+                        </td>
+
+                        <td className="px-8 py-5 align-top">
+                          <span
+                            className={`inline-flex rounded-full px-3 py-1 text-xs font-bold ${
+                              statusLabel === "노출 중"
+                                ? "bg-emerald-100 text-emerald-700"
+                                : statusLabel === "비활성"
+                                ? "bg-zinc-100 text-zinc-700"
+                                : statusLabel === "예정"
+                                ? "bg-sky-100 text-sky-700"
+                                : "bg-rose-100 text-rose-700"
+                            }`}
+                          >
+                            {statusLabel}
+                          </span>
+                        </td>
+
+                        <td className="px-8 py-5 align-top">
+                          {item.isPopup ? (
+                            <span className="inline-flex rounded-full bg-[#eef2ff] px-3 py-1 text-xs font-bold text-[#4d5cff]">
+                              팝업
+                            </span>
+                          ) : (
+                            <span className="inline-flex rounded-full bg-zinc-100 px-3 py-1 text-xs font-bold text-zinc-700">
+                              일반
+                            </span>
+                          )}
+                        </td>
+
+                        <td className="px-8 py-5 align-top text-zinc-600">
+                          {item.priority}
+                        </td>
+
+                        <td className="px-8 py-5 align-top text-zinc-600">
+                          <div className="min-w-[220px] space-y-1 text-sm">
+                            <p>시작: {formatDate(item.startsAt)}</p>
+                            <p>종료: {formatDate(item.endsAt)}</p>
+                          </div>
+                        </td>
+
+                        <td className="px-8 py-5 align-top text-zinc-600">
+                          {formatDate(item.updatedAt)}
+                        </td>
+
+                        <td className="px-8 py-5 align-top">
+                          <div className="flex flex-wrap gap-2">
+                            <button
+                              onClick={() => startEdit(item)}
+                              className="h-[40px] rounded-[12px] bg-[#eef3fb] px-4 text-sm font-bold text-[#003F8D] transition hover:bg-[#e1ebfb]"
+                            >
+                              수정
+                            </button>
+
+                            <button
+                              disabled={isBusy}
+                              onClick={() => deleteNotice(item.id)}
+                              className="h-[40px] rounded-[12px] bg-rose-50 px-4 text-sm font-bold text-rose-700 transition hover:bg-rose-100 disabled:opacity-60"
+                            >
+                              {isBusy ? "처리 중..." : "삭제"}
+                            </button>
+                          </div>
+                        </td>
+                      </tr>
+                    );
+                  })
+                )}
+              </tbody>
+            </table>
+          </div>
         </div>
       </div>
-    </AdminContext.Provider>
+    </section>
   );
 }

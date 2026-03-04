@@ -39,11 +39,8 @@ export default function AdminLoginPage() {
     // 이전 메시지 초기화
 
     if (!email.trim() || !pw.trim()) {
-      // 이메일 또는 비밀번호가 비어 있으면
-
       setMsg("이메일 / 비밀번호를 입력하세요.");
-      // 안내 메시지 출력
-
+      // 이메일 또는 비밀번호가 비어 있으면 안내 메시지 출력
       return;
     }
 
@@ -66,138 +63,73 @@ export default function AdminLoginPage() {
   };
 
   return (
-    <main className="min-h-screen bg-[linear-gradient(135deg,#eef4ff_0%,#fff3fb_45%,#effff8_100%)] px-6 py-10">
-      {/* 전체 배경을 화사한 블루/핑크/민트 계열로 크게 깔아줌 */}
+    <main className="flex min-h-screen items-center justify-center bg-zinc-50 px-6">
+      {/* 화면 전체를 단순한 밝은 배경으로 구성 */}
 
-      <div className="mx-auto grid min-h-[calc(100vh-80px)] max-w-[1800px] overflow-hidden rounded-[40px] border border-white/70 bg-white/70 shadow-[0_30px_90px_rgba(17,24,39,0.10)] backdrop-blur xl:grid-cols-[1.15fr_0.85fr]">
-        {/* 로그인 화면 전체를 큰 카드처럼 구성 */}
+      <div className="w-full max-w-md rounded-2xl border border-zinc-200 bg-white p-8 shadow-sm">
+        {/* 관리자 로그인 폼만 담는 단순한 카드 */}
 
-        <section className="relative hidden overflow-hidden bg-[linear-gradient(135deg,#7c8cff_0%,#57d4ff_45%,#7df0c6_100%)] p-12 text-white xl:flex xl:flex-col">
-          {/* 왼쪽 비주얼 영역 */}
-          {/* 큰 화면에서만 보여주고, 작은 화면에서는 로그인 폼만 보이게 처리 */}
+        <div className="mb-8 text-center">
+          <h1 className="text-3xl font-bold text-zinc-900">관리자 로그인</h1>
+          {/* 페이지 제목 */}
 
-          <div className="absolute inset-0 bg-[radial-gradient(circle_at_top_left,rgba(255,255,255,0.28),transparent_35%),radial-gradient(circle_at_bottom_right,rgba(255,255,255,0.20),transparent_30%)]" />
-          {/* 배경에 은은한 원형 빛 효과 추가 */}
+          <p className="mt-2 text-sm text-zinc-500">
+            관리자 계정으로 로그인해 주세요.
+          </p>
+          {/* 보조 설명 */}
+        </div>
 
-          <div className="relative z-10">
-            <p className="text-sm font-semibold uppercase tracking-[0.24em] text-white/85">
-              Connara Admin
-            </p>
-            {/* 작은 라벨 */}
+        <form onSubmit={onLogin} className="space-y-5">
+          {/* 로그인 폼 */}
 
-            <h1 className="mt-8 text-6xl font-black leading-[1.05]">
-              Bright
-              <br />
-              Clean
-              <br />
-              Dashboard
-            </h1>
-            {/* 크게 보이는 비주얼 타이틀 */}
+          <div>
+            <label className="mb-2 block text-sm font-medium text-zinc-700">
+              이메일
+            </label>
+            {/* 이메일 라벨 */}
 
-            <p className="mt-8 max-w-xl text-lg leading-8 text-white/90">
-              딱딱한 관리툴 느낌보다,
-              보기 좋고 한눈에 들어오는 일반 서비스 페이지 감성으로 만든 관리자 로그인 화면이야.
-            </p>
+            <input
+              type="email"
+              value={email}
+              onChange={(e) => setEmail(e.target.value)}
+              // 입력값이 바뀔 때 email 상태 업데이트
+              className="h-12 w-full rounded-lg border border-zinc-300 px-4 text-sm outline-none transition focus:border-zinc-900"
+              placeholder="admin@example.com"
+            />
           </div>
 
-          <div className="relative z-10 mt-auto grid gap-5 lg:grid-cols-2">
-            {/* 하단 소개 카드 2개 */}
+          <div>
+            <label className="mb-2 block text-sm font-medium text-zinc-700">
+              비밀번호
+            </label>
+            {/* 비밀번호 라벨 */}
 
-            <div className="rounded-[30px] border border-white/20 bg-white/15 p-6 backdrop-blur">
-              <p className="text-xl font-black">회원관리</p>
-              <p className="mt-3 text-base text-white/90">
-                회원 조회, 검색, 정지, 해제를 큰 화면에서 쉽게 관리할 수 있어.
-              </p>
-            </div>
-
-            <div className="rounded-[30px] border border-white/20 bg-white/15 p-6 backdrop-blur">
-              <p className="text-xl font-black">게시물 / 공지사항</p>
-              <p className="mt-3 text-base text-white/90">
-                메뉴를 분리해서 콘텐츠 운영도 깔끔하게 관리할 수 있어.
-              </p>
-            </div>
+            <input
+              type="password"
+              value={pw}
+              onChange={(e) => setPw(e.target.value)}
+              // 입력값이 바뀔 때 pw 상태 업데이트
+              className="h-12 w-full rounded-lg border border-zinc-300 px-4 text-sm outline-none transition focus:border-zinc-900"
+              placeholder="비밀번호 입력"
+            />
           </div>
-        </section>
 
-        <section className="flex items-center justify-center p-8 md:p-12">
-          {/* 오른쪽 로그인 폼 영역 */}
-
-          <div className="w-full max-w-xl">
-            {/* 로그인 카드 내용 폭을 넉넉하게 줌 */}
-
-            <div className="mb-8">
-              <div className="flex h-20 w-20 items-center justify-center rounded-[28px] bg-[linear-gradient(135deg,#7c8cff_0%,#57d4ff_100%)] text-3xl font-black text-white shadow-lg">
-                C
-              </div>
-              {/* 로그인 상단 아이콘 */}
-
-              <h2 className="mt-7 text-4xl font-black tracking-tight text-zinc-900">
-                관리자 로그인
-              </h2>
-              {/* 메인 제목 */}
-
-              <p className="mt-3 text-base leading-7 text-zinc-500">
-                관리자 계정으로 로그인하면 기본 화면이 회원관리 페이지로 열려요.
-              </p>
-              {/* 보조 설명 */}
+          {msg && (
+            <div className="rounded-lg border border-rose-200 bg-rose-50 px-4 py-3 text-sm text-rose-700">
+              {msg}
             </div>
+          )}
+          {/* 에러 메시지가 있을 때만 표시 */}
 
-            <form onSubmit={onLogin} className="space-y-5">
-              {/* 로그인 폼 */}
-
-              <div className="rounded-[30px] border border-white/70 bg-white/80 p-6 shadow-[0_20px_60px_rgba(17,24,39,0.06)]">
-                {/* 입력칸들을 감싸는 큰 카드 */}
-
-                <div>
-                  <label className="mb-3 block text-base font-bold text-zinc-700">
-                    이메일
-                  </label>
-                  {/* 이메일 라벨 */}
-
-                  <input
-                    type="email"
-                    value={email}
-                    onChange={(e) => setEmail(e.target.value)}
-                    // 입력값이 바뀔 때 email 상태 업데이트
-                    className="h-[60px] w-full rounded-[20px] border border-zinc-200 bg-white px-5 text-base outline-none transition focus:border-[#7c8cff]"
-                    placeholder="admin@example.com"
-                  />
-                </div>
-
-                <div className="mt-5">
-                  <label className="mb-3 block text-base font-bold text-zinc-700">
-                    비밀번호
-                  </label>
-                  {/* 비밀번호 라벨 */}
-
-                  <input
-                    type="password"
-                    value={pw}
-                    onChange={(e) => setPw(e.target.value)}
-                    // 입력값이 바뀔 때 pw 상태 업데이트
-                    className="h-[60px] w-full rounded-[20px] border border-zinc-200 bg-white px-5 text-base outline-none transition focus:border-[#57d4ff]"
-                    placeholder="비밀번호 입력"
-                  />
-                </div>
-
-                {msg && (
-                  <div className="mt-5 rounded-[20px] border border-rose-200 bg-rose-50 px-5 py-4 text-base text-rose-700">
-                    {msg}
-                  </div>
-                )}
-                {/* 에러 메시지가 있을 때만 표시 */}
-              </div>
-
-              <button
-                disabled={submitting}
-                className="h-[64px] w-full rounded-[24px] bg-[linear-gradient(135deg,#7c8cff_0%,#57d4ff_50%,#7df0c6_100%)] text-lg font-black text-white shadow-lg transition hover:opacity-90 disabled:opacity-60"
-              >
-                {submitting ? "로그인 중..." : "로그인"}
-              </button>
-              {/* 로그인 버튼 */}
-            </form>
-          </div>
-        </section>
+          <button
+            type="submit"
+            disabled={submitting}
+            className="h-12 w-full rounded-lg bg-zinc-900 text-sm font-semibold text-white transition hover:bg-zinc-800 disabled:cursor-not-allowed disabled:opacity-60"
+          >
+            {submitting ? "로그인 중..." : "로그인"}
+          </button>
+          {/* 로그인 버튼 */}
+        </form>
       </div>
     </main>
   );
