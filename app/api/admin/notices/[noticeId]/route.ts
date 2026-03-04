@@ -1,16 +1,12 @@
-// app/api/admin/notices/[id]/route.ts
+// app/api/admin/notices/[noticeId]/route.ts
 
 import { NextRequest, NextResponse } from "next/server";
 import { adminAuth, adminDb } from "@/lib/firebase.admin";
 
 type RouteContext = {
-  params?:
-    | {
-        id?: string;
-      }
-    | Promise<{
-        id?: string;
-      }>;
+  params: Promise<{
+    noticeId: string;
+  }>;
 };
 
 async function verifyAdminRequest(req: NextRequest) {
@@ -57,28 +53,25 @@ function parsePriority(value: unknown) {
   return num;
 }
 
-async function resolveNoticeId(req: NextRequest, context?: RouteContext) {
-  // 1차: Next route params 에서 읽기
-  const resolvedParams = context?.params
-    ? await Promise.resolve(context.params)
-    : undefined;
+async function resolveNoticeId(
+  req: NextRequest,
+  context: RouteContext
+): Promise<string> {
+  // 1차: Next.js params에서 noticeId 읽기
+  const { noticeId } = await context.params;
 
-  const idFromParams =
-    typeof resolvedParams?.id === "string" ? resolvedParams.id.trim() : "";
-
-  if (idFromParams) {
-    return idFromParams;
+  if (typeof noticeId === "string" && noticeId.trim()) {
+    return noticeId.trim();
   }
 
-  // 2차: URL 경로 마지막 segment 에서 fallback 추출
+  // 2차: 혹시 모를 상황 대비해서 URL 마지막 segment fallback
   const pathname = new URL(req.url).pathname;
   const segments = pathname.split("/").filter(Boolean);
   const lastSegment = segments[segments.length - 1] ?? "";
+  const decoded = decodeURIComponent(lastSegment).trim();
 
-  const idFromPath = decodeURIComponent(lastSegment).trim();
-
-  if (idFromPath && idFromPath !== "notices") {
-    return idFromPath;
+  if (decoded && decoded !== "notices") {
+    return decoded;
   }
 
   throw new Error("BAD_REQUEST");
@@ -88,7 +81,7 @@ export async function PATCH(req: NextRequest, context: RouteContext) {
   try {
     await verifyAdminRequest(req);
 
-    const id = await resolveNoticeId(req, context);
+    const noticeId = await resolveNoticeId(req, context);
 
     const body = await req.json();
 
@@ -131,7 +124,7 @@ export async function PATCH(req: NextRequest, context: RouteContext) {
       throw new Error("BAD_REQUEST");
     }
 
-    const docRef = adminDb.collection("notices").doc(id);
+    const docRef = adminDb.collection("notices").doc(noticeId);
     const snap = await docRef.get();
 
     if (!snap.exists) {
@@ -155,7 +148,7 @@ export async function PATCH(req: NextRequest, context: RouteContext) {
 
     return NextResponse.json({ ok: true });
   } catch (error) {
-    console.error("[PATCH /api/admin/notices/[id]] failed:", error);
+    console.error("[PATCH /api/admin/notices/[noticeId]] failed:", error);
 
     return NextResponse.json(
       { ok: false, error: "공지 저장 실패" },
@@ -168,9 +161,9 @@ export async function DELETE(req: NextRequest, context: RouteContext) {
   try {
     await verifyAdminRequest(req);
 
-    const id = await resolveNoticeId(req, context);
+    const noticeId = await resolveNoticeId(req, context);
 
-    const docRef = adminDb.collection("notices").doc(id);
+    const docRef = adminDb.collection("notices").doc(noticeId);
     const snap = await docRef.get();
 
     if (!snap.exists) {
@@ -184,7 +177,7 @@ export async function DELETE(req: NextRequest, context: RouteContext) {
 
     return NextResponse.json({ ok: true });
   } catch (error) {
-    console.error("[DELETE /api/admin/notices/[id]] failed:", error);
+    console.error("[DELETE /api/admin/notices/[noticeId]] failed:", error);
 
     return NextResponse.json(
       { ok: false, error: "공지 삭제 실패" },
