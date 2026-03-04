@@ -2,28 +2,23 @@
 
 // app/admin/notices/page.tsx
 
-// 관리자 공지사항 관리 페이지
+// 관리자 공지 팝업 관리 페이지
 // - 공지 목록 조회
 // - 공지 생성 / 수정 / 삭제
-// - 활성화 여부 / 팝업 여부 / 우선순위 / 노출 시작일 / 종료일 관리
-// - 이미지 파일 업로드 후 Firebase Storage 다운로드 URL을 공지에 저장
-// - 메인 홈 팝업에서 imageUrl 을 읽어 이미지 공지처럼 표시할 수 있게 구성
+// - 메인 진입 팝업으로 쓸지(showPopup)만 관리
+// - 노출 시작일 / 종료일 설정 가능
+// - 예전 isActive / isPopup 개념은 제거하고 showPopup 하나만 사용
 
 import { useCallback, useEffect, useMemo, useState } from "react";
 // React 훅들
-// - useState: 목록 / 폼 / 파일 / 로딩 / 알림 / 수정모드 상태 관리
-// - useEffect: 최초 진입 시 공지 목록 자동 조회
-// - useCallback: API 호출 함수 재생성 최소화
+// - useState: 폼 / 목록 / 로딩 / 알림 / 수정모드 상태 관리
+// - useEffect: 최초 진입 시 공지 목록 조회
+// - useCallback: API 함수 메모이제이션
 // - useMemo: 요약 수치 계산 최적화
 
-import { ref, uploadBytes, getDownloadURL } from "firebase/storage";
-// Firebase Storage 업로드 관련 함수들
-// - ref: 저장 경로 참조 생성
-// - uploadBytes: 파일 업로드
-// - getDownloadURL: 업로드 후 공개 URL 가져오기
-
-import { auth, storage } from "@/lib/firebase.client";
-// auth: 관리자 로그인 상태 / storage: 공지 이미지 파일 업로드용
+import { auth } from "@/lib/firebase.client";
+// 현재 로그인한 관리자 계정의 Firebase ID Token을 가져오기 위해 사용
+// 관리자 API 호출 시 Authorization 헤더에 Bearer 토큰으로 전달
 
 type AdminNoticeRow = {
   id: string;
@@ -35,18 +30,8 @@ type AdminNoticeRow = {
   content: string;
   // 공지 본문
 
-  imageUrl: string | null;
-  // 팝업 이미지 URL
-
-  isActive: boolean;
-  // 활성화 여부
-
-  isPopup: boolean;
-  // 팝업 여부
-
-  priority: number;
-  // 우선순위
-  // 숫자가 작을수록 먼저 노출
+  showPopup: boolean;
+  // 메인 진입 팝업으로 보여줄지 여부
 
   startsAt: string | null;
   // 노출 시작일 ISO 문자열
@@ -64,10 +49,7 @@ type AdminNoticeRow = {
 type NoticeFormState = {
   title: string;
   content: string;
-  imageUrl: string;
-  isActive: boolean;
-  isPopup: boolean;
-  priority: number;
+  showPopup: boolean;
   startsAt: string;
   endsAt: string;
 };
@@ -80,41 +62,40 @@ type NoticeMessage = {
 const initialForm: NoticeFormState = {
   title: "",
   content: "",
-  imageUrl: "",
-  isActive: true,
-  isPopup: true,
-  priority: 0,
+  showPopup: true,
   startsAt: "",
   endsAt: "",
 };
 // 공지 작성 기본값
-// - 기본적으로 활성화 + 팝업 상태
-// - imageUrl 은 처음엔 빈 문자열
+// - 기본적으로 팝업 켜짐 상태로 시작
 
 async function getIdTokenOrThrow() {
   // 현재 로그인한 관리자 계정의 Firebase ID Token을 가져오는 함수
 
   const user = auth.currentUser;
-  // 현재 로그인한 관리자 계정 읽기
+  // 현재 로그인한 사용자 정보 읽기
 
   if (!user) {
     throw new Error("NO_LOGIN");
   }
+  // 로그인 정보가 없으면 예외 처리
 
   return await user.getIdToken();
-  // 관리자 API 호출용 Bearer 토큰 반환
+  // Firebase ID Token 반환
 }
 
 function formatDate(value: string | null) {
-  // ISO 문자열을 한국식 보기 좋은 날짜 포맷으로 바꾸는 함수
+  // ISO 문자열을 화면용 날짜 문자열로 바꾸는 함수
 
   if (!value) return "-";
+  // 값이 없으면 하이픈 표시
 
   const d = new Date(value);
 
   if (Number.isNaN(d.getTime())) {
     return value;
   }
+  // Date 변환 실패 시 원본 문자열 반환
 
   return new Intl.DateTimeFormat("ko-KR", {
     year: "numeric",
@@ -123,10 +104,12 @@ function formatDate(value: string | null) {
     hour: "2-digit",
     minute: "2-digit",
   }).format(d);
+  // 한국식 날짜 포맷 반환
 }
 
 function toInputDateTime(value: string | null) {
-  // ISO 문자열을 datetime-local input 값 형태로 바꾸는 함수
+  // ISO 문자열을 datetime-local input 값으로 바꾸는 함수
+  // 예: 2026-03-04T14:30
 
   if (!value) return "";
 
@@ -144,7 +127,7 @@ function toInputDateTime(value: string | null) {
 }
 
 function truncateText(value: string, max = 120) {
-  // 공지 본문을 목록에서 너무 길지 않게 잘라주는 함수
+  // 목록에서 본문이 너무 길면 잘라주는 함수
 
   if (!value) return "";
 
@@ -154,29 +137,31 @@ function truncateText(value: string, max = 120) {
 }
 
 function getStatusLabel(item: AdminNoticeRow) {
-  // 현재 공지 상태를 보기 좋은 텍스트로 바꾸는 함수
+  // 공지의 현재 노출 상태를 사람이 읽기 쉬운 텍스트로 반환
 
-  if (!item.isActive) return "비활성";
+  if (!item.showPopup) {
+    return "팝업 꺼짐";
+  }
+  // 팝업 자체가 꺼져 있으면 바로 종료
 
   const now = Date.now();
-  const startsAt = item.startsAt ? new Date(item.startsAt).getTime() : null;
-  const endsAt = item.endsAt ? new Date(item.endsAt).getTime() : null;
+  // 현재 시각
 
-  if (startsAt && now < startsAt) {
+  const startsAtMs = item.startsAt ? new Date(item.startsAt).getTime() : 0;
+  const endsAtMs = item.endsAt ? new Date(item.endsAt).getTime() : 0;
+
+  if (startsAtMs && now < startsAtMs) {
     return "예정";
   }
+  // 시작일 전이면 예정
 
-  if (endsAt && now > endsAt) {
+  if (endsAtMs && now > endsAtMs) {
     return "종료";
   }
+  // 종료일이 지났으면 종료
 
   return "노출 중";
-}
-
-function sanitizeFileName(name: string) {
-  // 파일명을 Storage 경로에 안전하게 넣기 위해 간단히 정리하는 함수
-
-  return name.replace(/[^\w.\-]+/g, "_");
+  // 그 외에는 실제 노출 중
 }
 
 export default function AdminNoticesPage() {
@@ -194,20 +179,13 @@ export default function AdminNoticesPage() {
   // 목록 로딩 상태
 
   const [saving, setSaving] = useState(false);
-  // 저장(생성/수정) 처리 중 상태
-
-  const [uploadingImage, setUploadingImage] = useState(false);
-  // 이미지 업로드 처리 중 상태
+  // 저장 처리 중 상태
 
   const [busyId, setBusyId] = useState<string | null>(null);
-  // 개별 공지 삭제 처리 중 id
+  // 삭제 처리 중인 공지 id
 
   const [message, setMessage] = useState<NoticeMessage | null>(null);
-  // 화면 상단 알림 메시지 상태
-
-  const [imageFile, setImageFile] = useState<File | null>(null);
-  // 현재 선택된 이미지 파일 상태
-  // 저장 버튼 누르기 전에 Storage 업로드에 사용
+  // 화면 상단 알림 메시지
 
   const loadNotices = useCallback(async () => {
     // 공지 목록을 서버에서 불러오는 함수
@@ -222,10 +200,11 @@ export default function AdminNoticesPage() {
       const res = await fetch("/api/admin/notices", {
         headers: {
           Authorization: `Bearer ${token}`,
+          // 관리자 토큰 전달
         },
         cache: "no-store",
+        // 항상 최신 데이터 조회
       });
-      // 공지 목록 API 요청
 
       const data = await res.json();
       // 응답 JSON 파싱
@@ -239,7 +218,7 @@ export default function AdminNoticesPage() {
       }
 
       setItems(data.notices ?? []);
-      // 공지 목록 상태 반영
+      // 목록 상태 반영
     } catch {
       setMessage({
         type: "error",
@@ -256,12 +235,19 @@ export default function AdminNoticesPage() {
     // 최초 진입 시 공지 목록 자동 조회
   }, [loadNotices]);
 
-  const resetForm = () => {
-    // 작성 폼을 초기 상태로 되돌리는 함수
+  const resetForm = (clearMessage = true) => {
+    // 공지 작성 폼을 초기 상태로 되돌리는 함수
 
     setForm(initialForm);
+    // 입력값 초기화
+
     setEditingId(null);
-    setImageFile(null);
+    // 수정 모드 해제
+
+    if (clearMessage) {
+      setMessage(null);
+    }
+    // 필요할 때만 메시지 초기화
   };
 
   const startEdit = (item: AdminNoticeRow) => {
@@ -273,66 +259,19 @@ export default function AdminNoticesPage() {
     setForm({
       title: item.title,
       content: item.content,
-      imageUrl: item.imageUrl ?? "",
-      isActive: item.isActive,
-      isPopup: item.isPopup,
-      priority: item.priority,
+      showPopup: item.showPopup,
       startsAt: toInputDateTime(item.startsAt),
       endsAt: toInputDateTime(item.endsAt),
     });
-    // 선택한 공지 데이터를 폼에 채움
-
-    setImageFile(null);
-    // 기존 파일 선택 상태는 초기화
+    // 폼에 기존 값 채우기
 
     setMessage(null);
     // 이전 메시지 초기화
   };
 
-  const uploadImageIfNeeded = async () => {
-    // 이미지 파일이 선택되어 있으면 Firebase Storage에 업로드하고
-    // 다운로드 URL을 반환하는 함수
-    // 선택된 파일이 없으면 기존 form.imageUrl 을 그대로 반환
-
-    if (!imageFile) {
-      return form.imageUrl.trim() || null;
-    }
-    // 새 파일이 없으면 기존 imageUrl 유지
-
-    setUploadingImage(true);
-    // 업로드 시작
-
-    try {
-      const ext = imageFile.name.split(".").pop() || "png";
-      // 파일 확장자 추출
-
-      const safeName = sanitizeFileName(imageFile.name);
-      // 경로용 파일명 정리
-
-      const filePath = `notices/${Date.now()}_${safeName}`;
-      // Storage 저장 경로 생성
-      // notices 폴더 아래 timestamp 기반으로 저장해서 충돌 방지
-
-      const storageRef = ref(storage, filePath);
-      // 해당 경로에 대한 Storage 참조 생성
-
-      await uploadBytes(storageRef, imageFile);
-      // 실제 파일 업로드 실행
-
-      const downloadUrl = await getDownloadURL(storageRef);
-      // 업로드된 파일의 다운로드 URL 획득
-
-      return downloadUrl;
-      // API 저장용 imageUrl 반환
-    } finally {
-      setUploadingImage(false);
-      // 업로드 종료
-    }
-  };
-
   const onSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
-    // 폼 기본 새로고침 방지
+    // form 기본 새로고침 방지
 
     setMessage(null);
     // 이전 메시지 초기화
@@ -344,7 +283,7 @@ export default function AdminNoticesPage() {
       });
       return;
     }
-    // 제목/내용 필수 입력 검증
+    // 제목 / 내용 필수 입력 검사
 
     setSaving(true);
     // 저장 시작
@@ -353,17 +292,13 @@ export default function AdminNoticesPage() {
       const token = await getIdTokenOrThrow();
       // 관리자 인증 토큰 가져오기
 
-      const imageUrl = await uploadImageIfNeeded();
-      // 새 파일이 있으면 먼저 Storage 업로드
-      // 없으면 기존 imageUrl 유지
-
       const isEditMode = Boolean(editingId);
-      // 수정 모드 여부 판별
+      // 수정 모드 여부 판단
 
       const url = isEditMode
         ? `/api/admin/notices/${editingId}`
         : "/api/admin/notices";
-      // 생성/수정에 따라 API URL 선택
+      // 생성/수정에 따라 URL 선택
 
       const method = isEditMode ? "PATCH" : "POST";
       // 생성/수정에 따라 HTTP method 선택
@@ -377,15 +312,12 @@ export default function AdminNoticesPage() {
         body: JSON.stringify({
           title: form.title.trim(),
           content: form.content.trim(),
-          imageUrl,
-          isActive: form.isActive,
-          isPopup: form.isPopup,
-          priority: Number(form.priority),
+          showPopup: form.showPopup,
           startsAt: form.startsAt || null,
           endsAt: form.endsAt || null,
         }),
       });
-      // 공지 생성/수정 요청 전송
+      // 공지 생성/수정 요청
 
       const data = await res.json();
       // 응답 JSON 파싱
@@ -399,18 +331,18 @@ export default function AdminNoticesPage() {
       }
 
       await loadNotices();
-      // 저장 후 목록 다시 조회
+      // 저장 후 목록 재조회
+
+      resetForm(false);
+      // 성공 메시지는 유지해야 하므로 clearMessage=false
 
       setMessage({
         type: "success",
         text: isEditMode
-          ? "공지사항을 수정했어요."
-          : "공지사항을 생성했어요.",
+          ? "공지 팝업을 수정했어요."
+          : "공지 팝업을 저장했어요.",
       });
       // 성공 메시지 표시
-
-      resetForm();
-      // 폼 초기화
     } catch {
       setMessage({
         type: "error",
@@ -426,14 +358,20 @@ export default function AdminNoticesPage() {
     // 특정 공지를 삭제하는 함수
 
     const ok = confirm("정말 이 공지사항을 삭제하시겠습니까?");
+    // 사용자 확인
 
     if (!ok) return;
+    // 취소 시 중단
 
     setMessage(null);
+    // 이전 메시지 초기화
+
     setBusyId(noticeId);
+    // 현재 처리 중인 공지 id 저장
 
     try {
       const token = await getIdTokenOrThrow();
+      // 관리자 인증 토큰 가져오기
 
       const res = await fetch(`/api/admin/notices/${noticeId}`, {
         method: "DELETE",
@@ -441,8 +379,10 @@ export default function AdminNoticesPage() {
           Authorization: `Bearer ${token}`,
         },
       });
+      // 삭제 요청
 
       const data = await res.json();
+      // 응답 JSON 파싱
 
       if (!res.ok || !data.ok) {
         setMessage({
@@ -453,16 +393,16 @@ export default function AdminNoticesPage() {
       }
 
       setItems((prev) => prev.filter((item) => item.id !== noticeId));
-      // 목록 상태에서 해당 공지 제거
+      // 화면 목록에서 제거
 
       if (editingId === noticeId) {
         resetForm();
       }
-      // 수정 중이던 공지를 삭제한 경우 폼도 초기화
+      // 수정 중인 공지를 삭제했으면 폼 초기화
 
       setMessage({
         type: "success",
-        text: "공지사항을 삭제했어요.",
+        text: "공지 팝업을 삭제했어요.",
       });
     } catch {
       setMessage({
@@ -478,17 +418,28 @@ export default function AdminNoticesPage() {
   const totalCount = useMemo(() => items.length, [items]);
   // 전체 공지 수
 
-  const activeCount = useMemo(
-    () => items.filter((item) => item.isActive).length,
+  const popupEnabledCount = useMemo(
+    () => items.filter((item) => item.showPopup).length,
     [items]
   );
-  // 활성 공지 수
+  // 팝업 켜짐 수
 
-  const popupCount = useMemo(
-    () => items.filter((item) => item.isPopup).length,
-    [items]
-  );
-  // 팝업 공지 수
+  const showingNowCount = useMemo(() => {
+    const now = Date.now();
+
+    return items.filter((item) => {
+      if (!item.showPopup) return false;
+
+      const startsAtMs = item.startsAt ? new Date(item.startsAt).getTime() : 0;
+      const endsAtMs = item.endsAt ? new Date(item.endsAt).getTime() : 0;
+
+      if (startsAtMs && now < startsAtMs) return false;
+      if (endsAtMs && now > endsAtMs) return false;
+
+      return true;
+    }).length;
+  }, [items]);
+  // 지금 시점 기준 실제 노출 가능한 공지 수
 
   return (
     <section className="space-y-8">
@@ -496,15 +447,15 @@ export default function AdminNoticesPage() {
         <div className="flex flex-col gap-6 2xl:flex-row 2xl:items-end 2xl:justify-between">
           <div>
             <p className="text-sm font-semibold uppercase tracking-[0.18em] text-[#6c7cff]">
-              Notices
+              Popup Notice
             </p>
 
             <h1 className="mt-2 text-4xl font-black tracking-tight text-zinc-900">
-              공지사항 관리
+              공지 팝업 관리
             </h1>
 
             <p className="mt-3 text-base leading-7 text-zinc-500">
-              메인 홈에 뜨는 팝업 공지를 이미지 포함 형태로 관리할 수 있어요.
+              메인에 뜨는 팝업 공지 관리해요.
             </p>
           </div>
 
@@ -515,13 +466,13 @@ export default function AdminNoticesPage() {
             </div>
 
             <div className="rounded-[24px] bg-[linear-gradient(135deg,#43c97b_0%,#7be3b0_100%)] px-6 py-5 text-white shadow-lg">
-              <p className="text-sm font-semibold text-white/90">활성 공지</p>
-              <p className="mt-3 text-4xl font-black">{activeCount}</p>
+              <p className="text-sm font-semibold text-white/90">팝업 켜짐</p>
+              <p className="mt-3 text-4xl font-black">{popupEnabledCount}</p>
             </div>
 
             <div className="rounded-[24px] bg-[linear-gradient(135deg,#ff8ca8_0%,#ffb199_100%)] px-6 py-5 text-white shadow-lg">
-              <p className="text-sm font-semibold text-white/90">팝업 공지</p>
-              <p className="mt-3 text-4xl font-black">{popupCount}</p>
+              <p className="text-sm font-semibold text-white/90">지금 노출 가능</p>
+              <p className="mt-3 text-4xl font-black">{showingNowCount}</p>
             </div>
           </div>
         </div>
@@ -535,18 +486,11 @@ export default function AdminNoticesPage() {
                 {editingId ? "공지 수정" : "공지 등록"}
               </h2>
               <p className="mt-2 text-sm text-zinc-500">
-                제목, 본문, 이미지, 팝업 여부, 노출 기간을 설정해 주세요.
+                제목, 내용, 팝업 노출 여부, 노출 기간 설정하면 돼요.
               </p>
             </div>
 
-            {editingId && (
-              <button
-                onClick={resetForm}
-                className="rounded-[14px] bg-zinc-100 px-4 py-2 text-sm font-bold text-zinc-800 transition hover:bg-zinc-200"
-              >
-                새 공지로 전환
-              </button>
-            )}
+            
           </div>
 
           <form onSubmit={onSubmit} className="mt-6 space-y-5">
@@ -577,87 +521,22 @@ export default function AdminNoticesPage() {
                 }
                 rows={8}
                 className="w-full rounded-[16px] border border-zinc-200 bg-white px-4 py-3 text-sm outline-none transition focus:border-[#6c7cff]"
-                placeholder="팝업 본문 내용을 입력하세요"
+                placeholder="팝업 공지 내용을 입력하세요"
               />
             </div>
 
-            <div>
-              <label className="mb-2 block text-sm font-bold text-zinc-700">
-                이미지 파일
-              </label>
-
+            <label className="flex items-center gap-3 rounded-[16px] border border-zinc-200 px-4 py-4">
               <input
-                type="file"
-                accept="image/*"
-                onChange={(e) => {
-                  const file = e.target.files?.[0] ?? null;
-                  setImageFile(file);
-                }}
-                className="block w-full text-sm text-zinc-700"
-              />
-              {/* 공지 이미지 파일 선택 input */}
-
-              <p className="mt-2 text-xs text-zinc-500">
-                새 이미지를 선택하면 저장 시 Firebase Storage에 업로드돼요.
-              </p>
-
-              {(imageFile || form.imageUrl) && (
-                <div className="mt-4 overflow-hidden rounded-[16px] border border-zinc-200 bg-zinc-50">
-                  <img
-                    src={imageFile ? URL.createObjectURL(imageFile) : form.imageUrl}
-                    alt="공지 미리보기"
-                    className="max-h-[240px] w-full object-cover"
-                  />
-                </div>
-              )}
-            </div>
-
-            <div className="grid gap-4 sm:grid-cols-2">
-              <label className="flex items-center gap-3 rounded-[16px] border border-zinc-200 px-4 py-4">
-                <input
-                  type="checkbox"
-                  checked={form.isActive}
-                  onChange={(e) =>
-                    setForm((prev) => ({ ...prev, isActive: e.target.checked }))
-                  }
-                />
-                <span className="text-sm font-medium text-zinc-700">
-                  활성 공지
-                </span>
-              </label>
-
-              <label className="flex items-center gap-3 rounded-[16px] border border-zinc-200 px-4 py-4">
-                <input
-                  type="checkbox"
-                  checked={form.isPopup}
-                  onChange={(e) =>
-                    setForm((prev) => ({ ...prev, isPopup: e.target.checked }))
-                  }
-                />
-                <span className="text-sm font-medium text-zinc-700">
-                  팝업 공지
-                </span>
-              </label>
-            </div>
-
-            <div>
-              <label className="mb-2 block text-sm font-bold text-zinc-700">
-                우선순위
-              </label>
-
-              <input
-                type="number"
-                value={form.priority}
+                type="checkbox"
+                checked={form.showPopup}
                 onChange={(e) =>
-                  setForm((prev) => ({
-                    ...prev,
-                    priority: Number(e.target.value),
-                  }))
+                  setForm((prev) => ({ ...prev, showPopup: e.target.checked }))
                 }
-                className="h-[54px] w-full rounded-[16px] border border-zinc-200 bg-white px-4 text-sm outline-none transition focus:border-[#6c7cff]"
-                placeholder="0"
               />
-            </div>
+              <span className="text-sm font-medium text-zinc-700">
+                메인 진입 팝업으로 노출
+              </span>
+            </label>
 
             <div className="grid gap-4 sm:grid-cols-2">
               <div>
@@ -706,12 +585,10 @@ export default function AdminNoticesPage() {
             <div className="flex flex-wrap gap-3">
               <button
                 type="submit"
-                disabled={saving || uploadingImage}
+                disabled={saving}
                 className="h-[54px] rounded-[16px] bg-[linear-gradient(135deg,#6c7cff_0%,#57c7ff_100%)] px-6 text-sm font-bold text-white shadow-lg transition hover:opacity-90 disabled:opacity-60"
               >
-                {uploadingImage
-                  ? "이미지 업로드 중..."
-                  : saving
+                {saving
                   ? editingId
                     ? "수정 중..."
                     : "등록 중..."
@@ -722,11 +599,20 @@ export default function AdminNoticesPage() {
 
               <button
                 type="button"
-                onClick={resetForm}
+                onClick={() => resetForm()}
                 className="h-[54px] rounded-[16px] bg-zinc-100 px-6 text-sm font-bold text-zinc-800 transition hover:bg-zinc-200"
               >
                 초기화
               </button>
+
+              {editingId && (
+              <button
+                onClick={() => resetForm()}
+                className="rounded-[14px] bg-zinc-100 px-4 py-2 text-sm font-bold text-zinc-800 transition hover:bg-zinc-200"
+              >
+                새 공지로 전환
+              </button>
+            )}
             </div>
           </form>
         </div>
@@ -736,7 +622,7 @@ export default function AdminNoticesPage() {
             <div>
               <h2 className="text-2xl font-black text-zinc-900">공지 목록</h2>
               <p className="mt-2 text-sm text-zinc-500">
-                메인 홈 팝업으로 노출될 공지들을 확인하고 수정할 수 있어요.
+                메인 팝업으로 쓸 공지를 확인하고 수정할 수 있어요.
               </p>
             </div>
 
@@ -749,16 +635,14 @@ export default function AdminNoticesPage() {
           </div>
 
           <div className="overflow-x-auto">
-            <table className="min-w-[1320px] w-full text-[15px]">
+            <table className="min-w-[1100px] w-full text-[15px]">
               <thead className="bg-[linear-gradient(90deg,#f7f8ff_0%,#fff7fb_55%,#f3fffb_100%)] text-left text-[#4f596a]">
                 <tr>
                   <th className="px-8 py-4 font-semibold">제목</th>
-                  <th className="px-8 py-4 font-semibold">이미지</th>
                   <th className="px-8 py-4 font-semibold">본문</th>
                   <th className="px-8 py-4 font-semibold">상태</th>
-                  <th className="px-8 py-4 font-semibold">팝업</th>
-                  <th className="px-8 py-4 font-semibold">우선순위</th>
-                  <th className="px-8 py-4 font-semibold">노출 기간</th>
+                  <th className="px-8 py-4 font-semibold">노출 시작</th>
+                  <th className="px-8 py-4 font-semibold">노출 종료</th>
                   <th className="px-8 py-4 font-semibold">수정일</th>
                   <th className="px-8 py-4 font-semibold">관리</th>
                 </tr>
@@ -768,7 +652,7 @@ export default function AdminNoticesPage() {
                 {loading ? (
                   Array.from({ length: 5 }).map((_, i) => (
                     <tr key={i}>
-                      <td colSpan={9} className="px-8 py-5">
+                      <td colSpan={7} className="px-8 py-5">
                         <div className="h-12 animate-pulse rounded-[14px] bg-zinc-100" />
                       </td>
                     </tr>
@@ -776,7 +660,7 @@ export default function AdminNoticesPage() {
                 ) : items.length === 0 ? (
                   <tr>
                     <td
-                      colSpan={9}
+                      colSpan={7}
                       className="px-8 py-16 text-center text-base text-zinc-500"
                     >
                       등록된 공지가 없습니다.
@@ -797,21 +681,9 @@ export default function AdminNoticesPage() {
                           </div>
                         </td>
 
-                        <td className="px-8 py-5 align-top">
-                          {item.imageUrl ? (
-                            <img
-                              src={item.imageUrl}
-                              alt={item.title}
-                              className="h-16 w-24 rounded-[12px] object-cover"
-                            />
-                          ) : (
-                            <span className="text-sm text-zinc-400">없음</span>
-                          )}
-                        </td>
-
                         <td className="px-8 py-5 align-top text-zinc-600">
-                          <div className="max-w-[320px] whitespace-pre-wrap break-words leading-6">
-                            {truncateText(item.content, 140)}
+                          <div className="max-w-[340px] whitespace-pre-wrap break-words leading-6">
+                            {truncateText(item.content, 130)}
                           </div>
                         </td>
 
@@ -820,38 +692,23 @@ export default function AdminNoticesPage() {
                             className={`inline-flex rounded-full px-3 py-1 text-xs font-bold ${
                               statusLabel === "노출 중"
                                 ? "bg-emerald-100 text-emerald-700"
-                                : statusLabel === "비활성"
-                                ? "bg-zinc-100 text-zinc-700"
                                 : statusLabel === "예정"
                                 ? "bg-sky-100 text-sky-700"
-                                : "bg-rose-100 text-rose-700"
+                                : statusLabel === "종료"
+                                ? "bg-rose-100 text-rose-700"
+                                : "bg-zinc-100 text-zinc-700"
                             }`}
                           >
                             {statusLabel}
                           </span>
                         </td>
 
-                        <td className="px-8 py-5 align-top">
-                          {item.isPopup ? (
-                            <span className="inline-flex rounded-full bg-[#eef2ff] px-3 py-1 text-xs font-bold text-[#4d5cff]">
-                              팝업
-                            </span>
-                          ) : (
-                            <span className="inline-flex rounded-full bg-zinc-100 px-3 py-1 text-xs font-bold text-zinc-700">
-                              일반
-                            </span>
-                          )}
+                        <td className="px-8 py-5 align-top text-zinc-600">
+                          {formatDate(item.startsAt)}
                         </td>
 
                         <td className="px-8 py-5 align-top text-zinc-600">
-                          {item.priority}
-                        </td>
-
-                        <td className="px-8 py-5 align-top text-zinc-600">
-                          <div className="min-w-[220px] space-y-1 text-sm">
-                            <p>시작: {formatDate(item.startsAt)}</p>
-                            <p>종료: {formatDate(item.endsAt)}</p>
-                          </div>
+                          {formatDate(item.endsAt)}
                         </td>
 
                         <td className="px-8 py-5 align-top text-zinc-600">

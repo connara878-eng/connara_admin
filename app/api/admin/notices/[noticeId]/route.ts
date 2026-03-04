@@ -1,20 +1,20 @@
 // app/api/admin/notices/[noticeId]/route.ts
 
-// 관리자 공지사항 수정 / 삭제 API
+// 관리자 공지 수정 / 삭제 API
 // - PATCH /api/admin/notices/{noticeId}
 // - DELETE /api/admin/notices/{noticeId}
 
 import { NextResponse } from "next/server";
 // Next.js Route Handler 응답 객체
 
-import { adminAuth, adminDb } from "@/lib/firebase.admin";
-// Firebase Admin SDK 인스턴스
+import { getAdminAuth, getAdminDb } from "@/lib/firebase.admin";
+// notices API에서는 proxy 대신 getter 함수를 직접 사용
 
 export const runtime = "nodejs";
 // Firebase Admin SDK 사용이므로 nodejs runtime 사용
 
 function isAdminUid(uid: string) {
-  // 환경변수 ADMIN_UIDS 에 현재 uid가 포함되는지 확인하는 함수
+  // 환경변수 ADMIN_UIDS 안에 현재 uid가 포함되는지 확인
 
   const raw = process.env.ADMIN_UIDS ?? "";
 
@@ -38,6 +38,9 @@ async function requireAdmin(req: Request) {
   if (!token) {
     throw new Error("NO_TOKEN");
   }
+
+  const adminAuth = getAdminAuth();
+  // Firebase Admin Auth 인스턴스 직접 생성
 
   const decoded = await adminAuth.verifyIdToken(token);
 
@@ -94,73 +97,87 @@ function parseOptionalDate(value: unknown) {
   return date;
 }
 
-function parseOptionalImageUrl(value: unknown) {
-  // imageUrl 입력값을 string | null 로 정리하는 함수
+function mapNoticeData(id: string, data: any) {
+  // 공지 문서 데이터를 응답용 순수 JSON 구조로 변환하는 함수
 
-  if (value === null || value === undefined) {
-    return null;
-  }
-
-  if (typeof value !== "string") {
-    throw new Error("BAD_REQUEST");
-  }
-
-  const trimmed = value.trim();
-
-  if (!trimmed) {
-    return null;
-  }
-
-  return trimmed;
+  return {
+    id,
+    title: data.title ?? "",
+    content: data.content ?? "",
+    showPopup: Boolean(data.showPopup),
+    startsAt: toIso(data.startsAt),
+    endsAt: toIso(data.endsAt),
+    createdAt: toIso(data.createdAt),
+    updatedAt: toIso(data.updatedAt),
+  };
 }
 
 function createErrorResponse(error: unknown) {
   // 공통 에러 응답 함수
 
   const msg = String((error as any)?.message ?? "");
+  const isDev = process.env.NODE_ENV !== "production";
 
   if (msg.includes("NOT_ADMIN")) {
     return NextResponse.json(
-      { ok: false, error: "관리자 권한이 없습니다." },
+      {
+        ok: false,
+        error: "관리자 권한이 없습니다.",
+        detail: isDev ? msg : undefined,
+      },
       { status: 403 }
     );
   }
 
   if (msg.includes("NO_TOKEN")) {
     return NextResponse.json(
-      { ok: false, error: "인증 토큰이 없습니다." },
+      {
+        ok: false,
+        error: "인증 토큰이 없습니다.",
+        detail: isDev ? msg : undefined,
+      },
       { status: 401 }
     );
   }
 
   if (msg.includes("BAD_REQUEST")) {
     return NextResponse.json(
-      { ok: false, error: "입력값이 올바르지 않습니다." },
+      {
+        ok: false,
+        error: "입력값이 올바르지 않습니다.",
+        detail: isDev ? msg : undefined,
+      },
       { status: 400 }
     );
   }
 
   if (msg.includes("NOTICE_NOT_FOUND")) {
     return NextResponse.json(
-      { ok: false, error: "공지사항을 찾을 수 없습니다." },
+      {
+        ok: false,
+        error: "공지사항을 찾을 수 없습니다.",
+        detail: isDev ? msg : undefined,
+      },
       { status: 404 }
     );
   }
 
   return NextResponse.json(
-    { ok: false, error: "공지사항 처리 실패" },
+    {
+      ok: false,
+      error: "공지사항 처리 실패",
+      detail: isDev ? msg : undefined,
+    },
     { status: 500 }
   );
 }
 
 async function ensureNoticeExists(noticeId: string) {
-  // 대상 공지 문서 존재 여부 확인 함수
+  // 대상 공지 문서가 실제로 존재하는지 확인하는 함수
 
+  const adminDb = getAdminDb();
   const ref = adminDb.collection("notices").doc(noticeId);
-  // notices/{noticeId} 문서 참조
-
   const snap = await ref.get();
-  // 문서 조회
 
   if (!snap.exists) {
     throw new Error("NOTICE_NOT_FOUND");
@@ -169,76 +186,32 @@ async function ensureNoticeExists(noticeId: string) {
   return ref;
 }
 
-function mapNoticeDoc(doc: any) {
-  // Firestore 공지 문서를 응답용 객체로 변환하는 함수
-
-  const data = doc.data() ?? {};
-
-  return {
-    id: doc.id,
-    title: data.title ?? "",
-    content: data.content ?? "",
-    imageUrl: data.imageUrl ?? null,
-    isActive: Boolean(data.isActive),
-    isPopup: Boolean(data.isPopup),
-    priority:
-      typeof data.priority === "number" && Number.isFinite(data.priority)
-        ? data.priority
-        : 0,
-    startsAt: toIso(data.startsAt),
-    endsAt: toIso(data.endsAt),
-    createdAt: toIso(data.createdAt),
-    updatedAt: toIso(data.updatedAt),
-  };
-}
-
 export async function PATCH(
   req: Request,
   ctx: { params: Promise<{ noticeId: string }> }
 ) {
   try {
     await requireAdmin(req);
-    // 관리자 인증 먼저 수행
 
     const { noticeId } = await ctx.params;
-    // 동적 경로에서 noticeId 추출
-
     const body = await req.json().catch(() => null);
-    // 요청 body JSON 파싱
 
     if (!body) {
       throw new Error("BAD_REQUEST");
     }
 
     const title = typeof body.title === "string" ? body.title.trim() : "";
-    // 제목 문자열 정리
-
     const content = typeof body.content === "string" ? body.content.trim() : "";
-    // 본문 문자열 정리
 
-    const imageUrl = parseOptionalImageUrl(body.imageUrl);
-    // 이미지 URL 정리
-
-    const isActive = typeof body.isActive === "boolean" ? body.isActive : false;
-    // 활성 여부
-
-    const isPopup = typeof body.isPopup === "boolean" ? body.isPopup : false;
-    // 팝업 여부
-
-    const priority = Number(body.priority);
-    // 우선순위 숫자 변환
-
-    const startsAt = parseOptionalDate(body.startsAt);
-    // 시작일 파싱
-
-    const endsAt = parseOptionalDate(body.endsAt);
-    // 종료일 파싱
-
-    if (!title || !content) {
+    if (typeof body.showPopup !== "boolean") {
       throw new Error("BAD_REQUEST");
     }
 
-    if (!Number.isFinite(priority)) {
+    const showPopup = body.showPopup;
+    const startsAt = parseOptionalDate(body.startsAt);
+    const endsAt = parseOptionalDate(body.endsAt);
+
+    if (!title || !content) {
       throw new Error("BAD_REQUEST");
     }
 
@@ -247,30 +220,24 @@ export async function PATCH(
     }
 
     const ref = await ensureNoticeExists(noticeId);
-    // 수정 전에 공지 존재 여부 확인
 
     await ref.update({
       title,
       content,
-      imageUrl,
-      isActive,
-      isPopup,
-      priority,
+      showPopup,
       startsAt,
       endsAt,
       updatedAt: new Date(),
     });
-    // 공지 문서 수정
 
     const saved = await ref.get();
-    // 수정 후 다시 읽어서 응답에 반영
 
     return NextResponse.json({
       ok: true,
-      notice: mapNoticeDoc(saved),
+      notice: mapNoticeData(saved.id, saved.data() ?? {}),
     });
-    // 수정된 공지 반환
   } catch (error) {
+    console.error("[PATCH /api/admin/notices/[noticeId]] failed:", error);
     return createErrorResponse(error);
   }
 }
@@ -281,16 +248,11 @@ export async function DELETE(
 ) {
   try {
     await requireAdmin(req);
-    // 관리자 인증 먼저 수행
 
     const { noticeId } = await ctx.params;
-    // 동적 경로에서 noticeId 추출
-
     const ref = await ensureNoticeExists(noticeId);
-    // 삭제 전에 문서 존재 여부 확인
 
     await ref.delete();
-    // 공지 문서 삭제
 
     return NextResponse.json({
       ok: true,
@@ -298,6 +260,7 @@ export async function DELETE(
       deleted: true,
     });
   } catch (error) {
+    console.error("[DELETE /api/admin/notices/[noticeId]] failed:", error);
     return createErrorResponse(error);
   }
 }

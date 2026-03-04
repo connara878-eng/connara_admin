@@ -7,14 +7,21 @@
 //   "필요할 때 초기화"하는 구조로 작성
 // - 기존 코드 호환을 위해
 //   adminAuth / adminDb 이름도 그대로 export 해줌
+// - 단, notices 같은 민감한 라우트에서는 getAdminAuth()/getAdminDb() 직접 호출을 권장
 
-import { cert, getApp, getApps, initializeApp } from "firebase-admin/app";
+import {
+  cert,
+  getApp,
+  getApps,
+  initializeApp,
+  type App,
+} from "firebase-admin/app";
 // Firebase Admin 앱 초기화 관련 함수들
 
-import { getAuth } from "firebase-admin/auth";
+import { getAuth, type Auth } from "firebase-admin/auth";
 // 관리자 권한 Auth 인스턴스 생성 함수
 
-import { getFirestore } from "firebase-admin/firestore";
+import { getFirestore, type Firestore } from "firebase-admin/firestore";
 // 관리자 권한 Firestore 인스턴스 생성 함수
 
 function getRequiredEnv(name: string) {
@@ -30,7 +37,7 @@ function getRequiredEnv(name: string) {
   return value;
 }
 
-function getAdminApp() {
+function getAdminApp(): App {
   // Firebase Admin App을 필요할 때 초기화해서 반환하는 함수
   // 이미 초기화된 앱이 있으면 재사용하고, 없으면 새로 만든다
 
@@ -59,54 +66,61 @@ function getAdminApp() {
   });
 }
 
-export function getAdminAuth() {
+export function getAdminAuth(): Auth {
   // 함수형으로 Auth 인스턴스를 가져오고 싶을 때 사용
   return getAuth(getAdminApp());
 }
 
-export function getAdminDb() {
+export function getAdminDb(): Firestore {
   // 함수형으로 Firestore 인스턴스를 가져오고 싶을 때 사용
   return getFirestore(getAdminApp());
 }
 
 // -------------------------------------------------------------------
-// 기존 코드 호환용 export
+// 기존 코드 호환용 lazy export
 // -------------------------------------------------------------------
 // 예전 코드가 import { adminAuth, adminDb } 형태를 그대로 써도
 // 동작할 수 있게 lazy getter 형태의 proxy를 만든다.
-// 즉, 실제 메서드에 접근하는 순간 그때 Admin SDK가 초기화된다.
-
-type AnyObject = Record<string, unknown>;
+// 단, 메서드 호출 시 this 바인딩이 깨지지 않게 bind 처리한다.
 
 function createLazyProxy<T extends object>(factory: () => T): T {
-  // 실제 객체를 나중에 만들기 위한 공통 proxy 생성 함수
-
   return new Proxy({} as T, {
-    get(_target, prop, receiver) {
-      const real = factory();
-      return Reflect.get(real as unknown as AnyObject, prop, receiver);
+    get(_target, prop) {
+      const real = factory() as Record<string, unknown>;
+      const value = real[prop as keyof typeof real];
+
+      if (typeof value === "function") {
+        return (value as Function).bind(real);
+      }
+
+      return value;
     },
-    set(_target, prop, value, receiver) {
-      const real = factory();
-      return Reflect.set(real as unknown as AnyObject, prop, value, receiver);
+
+    set(_target, prop, value) {
+      const real = factory() as Record<string, unknown>;
+      real[prop as keyof typeof real] = value;
+      return true;
     },
+
     has(_target, prop) {
-      const real = factory();
+      const real = factory() as Record<string, unknown>;
       return prop in real;
     },
+
     ownKeys() {
-      const real = factory();
+      const real = factory() as Record<string, unknown>;
       return Reflect.ownKeys(real);
     },
+
     getOwnPropertyDescriptor(_target, prop) {
-      const real = factory();
+      const real = factory() as Record<string, unknown>;
       return Object.getOwnPropertyDescriptor(real, prop);
     },
   });
 }
 
-export const adminAuth = createLazyProxy(() => getAuth(getAdminApp()));
+export const adminAuth = createLazyProxy<Auth>(() => getAdminAuth());
 // 기존 코드에서 adminAuth.verifyIdToken(...) 형태를 그대로 쓸 수 있게 함
 
-export const adminDb = createLazyProxy(() => getFirestore(getAdminApp()));
+export const adminDb = createLazyProxy<Firestore>(() => getAdminDb());
 // 기존 코드에서 adminDb.collection(...) 형태를 그대로 쓸 수 있게 함
